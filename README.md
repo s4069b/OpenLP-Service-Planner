@@ -110,4 +110,4 @@ docs/             Installation and security documentation
 
 ## Licence
 
-No open-source licence has been selected in this repository package. **Choose and add a `LICENSE` file before describing the project as open source or inviting unrestricted reuse.** Until then, normal copyright applies.
+OpenLP Service Planner is released under the permissive **MIT License**. See [LICENSE](LICENSE).
