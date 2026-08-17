@@ -1,0 +1,41 @@
+{
+  "name": "openlp-service-planner",
+  "version": "1.74.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "check": "npm run types && tsc --noEmit",
+    "db:local": "wrangler d1 migrations apply openlp-service-planner --local",
+    "db:remote": "wrangler d1 migrations apply openlp-service-planner --remote",
+    "check:cloudflare": "npm run types && tsc --noEmit",
+    "test:cloudflare": "npm run check:cloudflare && CI=true wrangler d1 migrations apply openlp-service-planner --local && wrangler deploy --dry-run --outdir .cloudflare-dry-run",
+    "build:vps": "esbuild src/worker.ts --bundle --platform=node --format=esm --target=node24 --outfile=.vps-dist/worker.mjs",
+    "check:vps": "node --check server/server.mjs && node --check server/sqlite-d1.mjs && node --check server/filesystem-r2.mjs && node --check server/static-assets.mjs && node --check server/request-bridge.mjs && node --check server/environment.mjs && node --check server/migrate.mjs && node --check server/smoke-test.mjs",
+    "test:vps": "npm run check:vps && npm run build:vps && node server/smoke-test.mjs",
+    "start:vps": "npm run build:vps && node server/server.mjs",
+    "dev:vps": "npm run start:vps",
+    "db:vps": "node server/migrate.mjs",
+    "check:all": "npm run check:browser && npm run check:cloudflare && npm run check:vps",
+    "validate": "npm run check:browser && npm run test:migrations && npm run test:cloudflare && npm run test:vps",
+    "vendor:pdfjs": "node scripts/vendor-pdfjs.mjs",
+    "postinstall": "npm run vendor:pdfjs",
+    "check:browser": "node --check public/app.js && npm run check:quality",
+    "test:migrations": "node server/migration-test.mjs",
+    "check:quality": "node scripts/project-quality-check.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "wrangler": "4.122.0",
+    "@types/node": "24.0.0"
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "esbuild": "0.28.2",
+    "pdfjs-dist": "6.2.108"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

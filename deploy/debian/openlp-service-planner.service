@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenLP Service Planner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openlp-planner
+Group=openlp-planner
+WorkingDirectory=/opt/openlp-service-planner
+EnvironmentFile=/etc/openlp-service-planner.env
+ExecStart=/usr/bin/node server/server.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/openlp-service-planner
+Environment=PLANNER_DATA_DIR=/var/lib/openlp-service-planner
+
+[Install]
+WantedBy=multi-user.target

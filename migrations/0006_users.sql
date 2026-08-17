@@ -1,0 +1,7 @@
+-- v28 Cloudflare Access identities
+CREATE TABLE IF NOT EXISTS users (
+  email TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

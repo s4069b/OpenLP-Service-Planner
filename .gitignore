@@ -1,0 +1,12 @@
+node_modules/
+worker-configuration.d.ts
+.wrangler/
+.vps-dist/
+.cloudflare-dry-run/
+.dev.vars
+.env
+.env.*
+*.log
+.DS_Store
+data/
+public/vendor/pdfjs/

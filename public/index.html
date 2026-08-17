@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f7f7f4" />
+  <title>OpenLP Service Planner</title>
+  <link rel="stylesheet" href="app.css?v=174" />
+
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png">
+</head>
+<body>
+  <header class="topbar" id="appHeader">
+    <a class="brand" href="#" aria-label="OpenLP Service Planner home">
+      <span class="brandmark">O</span><span>OpenLP Service Planner</span>
+    </a>
+
+    <nav class="screen-nav planner-header-nav" id="plannerHeaderNav" aria-label="Service Planner navigation">
+      <button class="secondary compact" id="servicesBtn">Services</button>
+      <button class="secondary compact" id="libraryBtn">Library</button>
+      <button class="secondary compact" id="runSheetBtn">Run Sheet</button>
+      <span class="planner-export-stack">
+        <button class="primary compact" id="exportBtn">Export OpenLP</button>
+        <button class="planner-clear-download" id="clearProjectorMarkBtn" type="button" hidden>Clear download mark</button>
+      </span>
+    </nav>
+
+    <nav class="screen-nav services-header-nav" id="servicesHeaderNav" aria-label="Services navigation" hidden>
+      <button class="secondary compact" id="servicesLibraryBtn">Library</button>
+      <a class="secondary compact" id="servicesPublishedPlansBtn" href="/churchsuite-plans" target="_blank" rel="noopener" hidden>ChurchSuite Plans ↗</a>
+      <button class="secondary compact back-last-service" id="servicesCloseBtn">Back to last service</button>
+    </nav>
+
+    <div class="top-actions">
+      <div class="top-status" id="topStatus" aria-live="polite">
+        <div class="last-edited" id="lastEdited">No edits recorded yet</div>
+        <div class="projector-status-note" id="projectorStatusNote" hidden></div>
+      </div>
+      <button class="ghost" id="activityBtn">Activity</button>
+      <button class="ghost" id="settingsBtn">Settings</button>
+      <button class="avatar" title="Current editor">SB</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="service-head">
+      <div>
+        <div class="eyebrow" id="serviceDate">Sunday 16 August 2026</div>
+        <div class="title-line">
+          <h1 id="serviceTitle" role="button" tabindex="0" title="Switch service plan">Morning Service</h1>
+        </div>
+        <div class="meta">Theme <button class="linkish" id="themeBtn">KSSS (am) white</button></div>
+      </div>
+    </section>
+
+    <section class="readiness" aria-label="Service readiness">
+      <div><strong id="readyCount">6 of 7</strong><span>projection items ready</span></div>
+      <div class="bar"><i id="readyBar"></i></div>
+    </section>
+    <div class="churchsuite-sync-note" id="churchSuiteSyncNote" hidden></div>
+    <div class="churchsuite-plan-link-missing" id="churchSuitePlanLinkMissing" hidden>ChurchSuite plan linked, but the Plan Page address is not set. Add it once in Settings → Extensions.</div>
+
+    <section class="service-list" id="serviceList" aria-label="Service order"></section>
+  </main>
+
+
+  <section class="services-page" id="servicesPage" hidden aria-label="Service plans">
+    <div class="services-page-inner">
+      <div class="services-page-head">
+        <div>
+          <div class="eyebrow">SERVICES</div>
+          <h1>Service plans</h1>
+          <p class="services-page-subtitle">Plan ahead and review service readiness.</p>
+        </div>
+      </div>
+      <div class="services-table-wrap">
+        <table class="services-table">
+          <thead><tr>
+            <th class="service-select-cell"><input id="servicesSelectAll" type="checkbox" aria-label="Select all services"></th>
+            <th>Service</th><th>Date</th><th>Progress</th>
+            <th data-cs-column>ChurchSuite plan</th><th data-cs-column>ChurchSuite updated</th><th></th>
+          </tr></thead>
+          <tbody id="servicesTableBody"></tbody>
+        </table>
+      </div>
+      <div class="services-mobile-list" id="servicesMobileList"></div>
+    </div>
+  </section>
+
+  <footer class="app-footer planner-footer" id="plannerFooter">
+    <div class="footer-inner">
+      <button class="primary footer-primary" id="addBtn">＋ Item</button>
+      <button class="secondary footer-icon-button" id="undoBtn" title="Undo last change" aria-label="Undo last change">↶ <span>Undo</span></button>
+      <button class="secondary footer-icon-button" id="redoBtn" title="Redo last undone change" aria-label="Redo last undone change">↷ <span>Redo</span></button>
+      <button class="secondary footer-sync-cs" id="plannerSyncChurchSuiteBtn" hidden title="Sync this service with ChurchSuite"><span class="sync-icon" aria-hidden="true">↻</span><span>ChurchSuite</span></button>
+      <button class="secondary" id="openLPViewBtn" aria-pressed="false">OpenLP view</button>
+    </div>
+  </footer>
+
+  <footer class="app-footer services-footer" id="servicesFooter" hidden>
+    <div class="footer-inner">
+      <button class="primary footer-primary" id="servicesAddBtn">＋ Service</button>
+      <button class="danger solid-danger" id="servicesDeleteSelectedBtn" hidden disabled>Delete selected</button>
+      <button class="secondary" id="servicesSyncChurchSuiteBtn" hidden>Sync ChurchSuite</button>
+    </div>
+  </footer>
+
+  <dialog id="sheet" class="sheet">
+    <div class="sheet-card">
+      <header class="sheet-fixed-header">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <h2 id="sheetTitle"></h2>
+        <button class="close" id="sheetClose" aria-label="Close">×</button>
+      </header>
+      <div id="sheetBody" class="sheet-scroll-body"></div>
+      <footer id="sheetFooter" class="sheet-fixed-footer"></footer>
+    </div>
+  </dialog>
+
+  <dialog id="runSheet" class="print-dialog">
+    <div class="print-card">
+      <button class="close" id="runClose" aria-label="Close">×</button>
+      <div id="runBody"></div>
+      <div class="print-actions"><button class="primary" id="runPrint" type="button">Print</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="plannerDialog" class="planner-dialog" aria-labelledby="plannerDialogTitle">
+    <form method="dialog" class="planner-dialog-card" id="plannerDialogForm">
+      <h2 id="plannerDialogTitle">OpenLP Service Planner</h2>
+      <p id="plannerDialogMessage"></p>
+      <div class="field" id="plannerDialogInputWrap" hidden>
+        <label id="plannerDialogInputLabel" for="plannerDialogInput">Value</label>
+        <input id="plannerDialogInput" autocomplete="off">
+      </div>
+      <div class="planner-dialog-actions">
+        <button class="secondary" id="plannerDialogCancel" value="cancel" type="submit">Cancel</button>
+        <button class="primary" id="plannerDialogConfirm" value="confirm" type="submit">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js?v=174"></script>
+</body>
+</html>
