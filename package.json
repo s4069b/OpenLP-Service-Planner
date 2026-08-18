@@ -1,6 +1,6 @@
 {
   "name": "openlp-service-planner",
-  "version": "1.76.33",
+  "version": "1.76.34",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
