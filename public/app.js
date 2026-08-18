@@ -787,6 +787,7 @@ async function saveServiceMeta(){
           churchSuitePlanIdentifier:s.churchSuitePlanIdentifier||null,
           churchSuitePlanUrl:s.churchSuitePlanUrl||null,
           churchSuiteLastUpdated:s.churchSuiteLastUpdated||null,
+          churchSuiteLastSynced:s.churchSuiteLastSynced||null,
           churchSuiteImportMode:s.churchSuiteImportMode||null,
           serviceTemplateId:s.serviceTemplateId||null,
           churchSuiteOutOfSync:!!s.churchSuiteOutOfSync,
@@ -5217,6 +5218,7 @@ function serviceItemDetailForDisplay(item){
 }
 
 function formatChurchSuiteUpdated(v){ return v?formatLastEdited(v):'Not yet'; }
+function formatChurchSuiteSynced(v){ return v?formatLastEdited(v):'Not yet'; }
 
 function rememberLastScreen(screen){
   try{localStorage.setItem(LAST_SCREEN_KEY,screen);}catch(_){}
@@ -5301,12 +5303,12 @@ function renderServicesPage(){
       <td>${esc(s.date||'')}</td><td>${serviceProgressBadge(s)}</td>
       <td data-cs-column>${churchSuiteEnabled()?(
         actualChurchSuitePlanUrl(s)
-          ?`<a class="secondary compact churchsuite-view-plan" href="${esc(actualChurchSuitePlanUrl(s))}" target="_blank" rel="noopener">View the ChurchSuite Plan</a> <button class="secondary compact" data-sync-cs="${esc(s.id)}">Sync ChurchSuite</button> <button class="secondary compact" data-edit-cs="${esc(s.id)}">Edit CS Plan URL</button>`
+          ?`<a class="secondary compact churchsuite-view-plan" href="${esc(actualChurchSuitePlanUrl(s))}" target="_blank" rel="noopener">View the ChurchSuite Plan</a> <button class="secondary compact" data-sync-cs="${esc(s.id)}">Sync ChurchSuite</button>`
           :hasChurchSuitePlanReference(s)
-            ?`<span>Linked</span> · <button class="text-action" data-sync-cs="${esc(s.id)}">Sync</button> · <button class="text-action" data-edit-cs="${esc(s.id)}">Add link</button>`
-            :`<button class="text-action" data-edit-cs="${esc(s.id)}">Add link</button>`
+            ?`<span>Linked</span> · <button class="text-action" data-sync-cs="${esc(s.id)}">Sync</button>`
+            :`<span class="meta">Not linked</span>`
       ):''}</td>
-      <td data-cs-column>${churchSuiteEnabled()?esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated)):''}</td>
+      <td data-cs-column>${churchSuiteEnabled()?`<div class="churchsuite-service-times"><span><small>ChurchSuite updated</small>${esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated))}</span><span><small>Last synced</small>${esc(formatChurchSuiteSynced(s.churchSuiteLastSynced))}</span></div>`:''}</td>
       <td><div class="service-row-actions"><button class="secondary compact service-edit-btn" data-open-service="${esc(s.id)}">Open</button><button class="secondary compact" data-save-template="${esc(s.id)}">Save template</button><button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button></div></td>
     </tr>`).join('');
   $('#servicesMobileList').innerHTML=services.map(s=>`
@@ -5318,9 +5320,9 @@ function renderServicesPage(){
       </div>
       <div class="service-mobile-grid">
         <span><small>Progress</small>${serviceProgressBadge(s)}</span>
-        ${churchSuiteEnabled()?`<span><small>Updated</small>${esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated))}</span>`:`<span><small>Updated</small>${esc(s.lastEditedAt?formatLastEdited(s.lastEditedAt):'Not yet')}</span>`}
+        ${churchSuiteEnabled()?`<span><small>ChurchSuite updated</small>${esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated))}</span><span><small>Last synced</small>${esc(formatChurchSuiteSynced(s.churchSuiteLastSynced))}</span>`:`<span><small>Updated</small>${esc(s.lastEditedAt?formatLastEdited(s.lastEditedAt):'Not yet')}</span>`}
         ${churchSuiteEnabled()?`<span class="mobile-wide churchsuite-mobile-field"><small>ChurchSuite</small>${actualChurchSuitePlanUrl(s)?`<a class="secondary compact churchsuite-view-plan" href="${esc(actualChurchSuitePlanUrl(s))}" target="_blank" rel="noopener">View the ChurchSuite Plan</a>`:'Not linked'}</span>
-        <span class="mobile-wide churchsuite-mobile-actions">${hasChurchSuitePlanReference(s)?`<button class="secondary compact" data-sync-cs="${esc(s.id)}">Sync ChurchSuite</button> `:''}<button class="secondary compact" data-edit-cs="${esc(s.id)}">${actualChurchSuitePlanUrl(s)?'Edit CS Plan URL':'Add ChurchSuite link'}</button></span>`:''}
+        ${hasChurchSuitePlanReference(s)?`<span class="mobile-wide churchsuite-mobile-actions"><button class="secondary compact" data-sync-cs="${esc(s.id)}">Sync ChurchSuite</button></span>`:''}`:''}
       </div>
     </article>`).join('');
   $('#servicesPage').querySelectorAll('[data-select-service]').forEach(box=>box.onchange=()=>{
@@ -5350,7 +5352,6 @@ function renderServicesPage(){
     render();
   });
   $('#servicesPage').querySelectorAll('[data-save-template]').forEach(b=>b.onclick=()=>{const svc=state.services.find(x=>String(x.id)===String(b.dataset.saveTemplate));if(svc)saveServiceAsTemplate(svc)});
-  $('#servicesPage').querySelectorAll('[data-edit-cs]').forEach(b=>b.onclick=()=>openChurchSuiteLinkDialog(b.dataset.editCs));
   $('#servicesPage').querySelectorAll('[data-sync-cs]').forEach(b=>b.onclick=()=>{
     const s=state.services.find(x=>String(x.id)===String(b.dataset.syncCs));
     if(!s)return;
@@ -6902,6 +6903,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       existing.churchSuitePlanIdentifier=preview.identifier;
       existing.churchSuitePlanUrl=churchSuitePublicPlanUrl(scan,url)||existing.churchSuitePlanUrl||'';
       existing.churchSuiteLastUpdated=preview.modifiedAt||now;
+      existing.churchSuiteLastSynced=now;
       existing.churchSuiteImportMode=importMode;
       existing.serviceTemplateId=importMode==='template'?(scanOptions.templateId||existing.serviceTemplateId||null):existing.serviceTemplateId||null;
       clearChurchSuiteOutOfSync(existing);
@@ -6944,6 +6946,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       churchSuitePlanIdentifier:preview.identifier,
       churchSuitePlanUrl:churchSuitePublicPlanUrl(scan,url)||'',
       churchSuiteLastUpdated:preview.modifiedAt||now,
+      churchSuiteLastSynced:now,
       churchSuiteImportMode:importMode,
       serviceTemplateId:importMode==='template'?(scanOptions.templateId||null):null,
       churchSuiteOutOfSync:false,
@@ -7489,6 +7492,7 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
         existing.churchSuitePlanIdentifier=plan.identifier;
         existing.churchSuitePlanUrl=churchSuitePublicPlanUrl(plan,'')||existing.churchSuitePlanUrl||'';
         existing.churchSuiteLastUpdated=plan.modifiedAt||now;
+        existing.churchSuiteLastSynced=now;
         const mappedService=churchSuiteMappedServiceType(plan.title);
         existing.kind=mappedService.kind;
         existing.serviceTypeId=mappedService.serviceTypeId;
@@ -7517,7 +7521,7 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
           items:mapped.mapped,activity:[[currentEditor(),'imported ChurchSuite service plan','just now']],
           lastEditedAt:now,lastEditedBy:currentEditor(),lastEditedAction:'imported ChurchSuite service plan',
           churchSuitePlanId:plan.id,churchSuitePlanIdentifier:plan.identifier,
-          churchSuitePlanUrl:churchSuitePublicPlanUrl(plan,''),churchSuiteLastUpdated:plan.modifiedAt||now,
+          churchSuitePlanUrl:churchSuitePublicPlanUrl(plan,''),churchSuiteLastUpdated:plan.modifiedAt||now,churchSuiteLastSynced:now,
           churchSuiteImportMode:importMode,
           serviceTemplateId:importMode==='template'?resolvedTemplateId:null,
           churchSuiteOutOfSync:false,

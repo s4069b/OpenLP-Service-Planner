@@ -23,7 +23,7 @@ const packageJson=JSON.parse(pkg);
 const version=String(packageJson.version||'');
 const majorMinor=version.split('.').slice(0,2).join('.');
 if(majorMinor!=='1.76')fail(`package.json version must be 1.76.x for this release, found ${version||'(missing)'}.`);
-if(!index.includes('app.css?v=17632')||!index.includes('app.js?v=17632'))fail('index.html asset cache-busting must be v=17622.');
+if(!index.includes('app.css?v=17633')||!index.includes('app.js?v=17633'))fail('index.html asset cache-busting must be v=17622.');
 if(!worker.includes('appVersion:"1.76"'))fail('Full-backup manifest appVersion must be 1.76.');
 
 for(const key of ['CHURCHSUITE_OIDC_CLIENT_ID','CHURCHSUITE_OIDC_CLIENT_SECRET','PLANNER_SETUP_TOKEN','PLANNER_ADMIN_RECOVERY_TOKEN']){
@@ -75,6 +75,9 @@ if(!worker.includes('data-auto-sync="${automaticRefreshDue?\'1\':\'0\'}"'))fail(
 if(!worker.includes('<script src="/churchsuite-directory.js"></script>'))fail('Published ChurchSuite page must load syncing UI for all permitted viewers.');
 if(!app.includes('function redirectForExpiredPlannerSession(response)'))fail('Expired Planner sessions must redirect cleanly back through sign-in.');
 if(!app.includes("error=${encodeURIComponent('Your Planner session has expired. Please sign in again.')}"))fail('Expired-session redirect must explain why sign-in is required.');
+if(app.includes('data-edit-cs'))fail('Services table must not expose ChurchSuite URL edit controls.');
+if(!app.includes('churchSuiteLastSynced'))fail('Service data must retain an independent ChurchSuite last-synced timestamp.');
+if(!worker.includes('churchsuite_last_synced'))fail('ChurchSuite last-synced timestamp must persist in the service table.');
 console.log('Project quality checks passed.');
 console.log('Native browser dialogs: none');
 console.log('PDF.js runtime source: local');

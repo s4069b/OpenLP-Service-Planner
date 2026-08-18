@@ -1022,7 +1022,7 @@ async function bootstrap(env: Cloudflare.Env) {
             service_type_id,service_type_name,
             last_edited_at,last_edited_by,last_edited_action,
             churchsuite_plan_id,churchsuite_plan_identifier,churchsuite_plan_url,
-            churchsuite_last_updated,churchsuite_import_mode,churchsuite_out_of_sync,churchsuite_out_of_sync_reason
+            churchsuite_last_updated,churchsuite_last_synced,churchsuite_import_mode,churchsuite_out_of_sync,churchsuite_out_of_sync_reason
      FROM services
      ORDER BY date_iso, title`
   ).all<any>();
@@ -1062,6 +1062,7 @@ async function bootstrap(env: Cloudflare.Env) {
       churchSuitePlanIdentifier: row.churchsuite_plan_identifier || undefined,
       churchSuitePlanUrl: row.churchsuite_plan_url || undefined,
       churchSuiteLastUpdated: row.churchsuite_last_updated || undefined,
+      churchSuiteLastSynced: row.churchsuite_last_synced || undefined,
       churchSuiteImportMode: row.churchsuite_import_mode || undefined,
       churchSuiteOutOfSync: !!row.churchsuite_out_of_sync,
       churchSuiteOutOfSyncReason: row.churchsuite_out_of_sync_reason || undefined,
@@ -1111,10 +1112,10 @@ async function upsertService(env: Cloudflare.Env, service: any) {
     `INSERT INTO services
       (id,title,date_iso,date_display,theme,published,kind,service_type_id,service_type_name,downloaded_for_device_at,downloaded_snapshot,
        last_edited_at,last_edited_by,last_edited_action,
-       churchsuite_plan_id,churchsuite_plan_identifier,churchsuite_plan_url,churchsuite_last_updated,churchsuite_import_mode,
+       churchsuite_plan_id,churchsuite_plan_identifier,churchsuite_plan_url,churchsuite_last_updated,churchsuite_last_synced,churchsuite_import_mode,
        churchsuite_out_of_sync,churchsuite_out_of_sync_reason,
        updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
      ON CONFLICT(id) DO UPDATE SET
        title=excluded.title,
        date_iso=excluded.date_iso,
@@ -1133,6 +1134,7 @@ async function upsertService(env: Cloudflare.Env, service: any) {
        churchsuite_plan_identifier=excluded.churchsuite_plan_identifier,
        churchsuite_plan_url=excluded.churchsuite_plan_url,
        churchsuite_last_updated=excluded.churchsuite_last_updated,
+       churchsuite_last_synced=excluded.churchsuite_last_synced,
        churchsuite_import_mode=excluded.churchsuite_import_mode,
        churchsuite_out_of_sync=excluded.churchsuite_out_of_sync,
        churchsuite_out_of_sync_reason=excluded.churchsuite_out_of_sync_reason,
@@ -1156,6 +1158,7 @@ async function upsertService(env: Cloudflare.Env, service: any) {
     service.churchSuitePlanIdentifier || null,
     service.churchSuitePlanUrl || null,
     service.churchSuiteLastUpdated || null,
+    service.churchSuiteLastSynced || null,
     service.churchSuiteImportMode || null,
     service.churchSuiteOutOfSync ? 1 : 0,
     service.churchSuiteOutOfSyncReason || null

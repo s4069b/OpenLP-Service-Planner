@@ -3867,3 +3867,8 @@ a.ms.churchsuite-signin{
 .statistics-date-range .field{margin:0;min-width:135px;}
 .danger-zone-card{border-color:rgba(170,40,40,.2);}
 @media(max-width:760px){.statistics-delete-card{align-items:stretch;flex-direction:column}.statistics-date-range{align-items:stretch;flex-direction:column}.statistics-date-range .field,.statistics-date-range button{width:100%}}
+
+/* ChurchSuite service timestamps */
+.churchsuite-service-times{display:flex;flex-direction:column;gap:5px}
+.churchsuite-service-times span{display:flex;flex-direction:column;gap:1px}
+.churchsuite-service-times small{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
