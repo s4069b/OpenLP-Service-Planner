@@ -6363,7 +6363,17 @@ function openServiceTemplateEditor(templateId,returnTo='library'){
         };
       };
     };
-    if($('#templateEditorTheme'))$('#templateEditorTheme').onchange=()=>{draft.theme=$('#templateEditorTheme').value||'Default';mark();};
+    const templateThemeSelect=$('#templateEditorTheme');
+    if(templateThemeSelect){
+      const applyTemplateThemeChange=()=>{
+        const nextTheme=templateThemeSelect.value||'Default';
+        if(String(draft.theme||'Default')===String(nextTheme))return;
+        draft.theme=nextTheme;
+        mark();
+      };
+      templateThemeSelect.addEventListener('change',applyTemplateThemeChange);
+      templateThemeSelect.addEventListener('input',applyTemplateThemeChange);
+    }
     if($('#templateEditorAddItem'))$('#templateEditorAddItem').onclick=openTemplateAddItem;
     const leaveTemplateEditor=async()=>{
       if(dirty){
