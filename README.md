@@ -1,55 +1,132 @@
-# OpenLP Service Planner v1.76.31
+# OpenLP Service Planner
 
-Current release: **v1.76.31**, a security, restore-integrity and Cloudflare/Debian portability consolidation. Historical release notes are retained below for development reference.
+OpenLP Service Planner is a web-based service planning application designed to make preparing services for [OpenLP](https://openlp.org/) easier, particularly when several people contribute to preparing a service.
 
-## v1.76.31 — automatic published ChurchSuite refresh with visible progress
+It provides a shared online workspace where services can be planned in advance, songs and projection media can be prepared, and the completed service can be downloaded as an OpenLP service file for use on the projection computer.
 
-- The published ChurchSuite Plans page now considers its cache stale after **15 minutes**.
-- Any authenticated viewer may cause a stale cache to refresh, but only through the automatic stale-refresh path; Service-list-only users still cannot manually force a re-sync.
-- The page renders immediately using the current cached list, then shows **Syncing ChurchSuite…** with an animated progress indicator while the slow server refresh runs.
-- When the refresh completes, the page reloads with the new list. If another sync is already running, the page says so and checks again shortly.
-- Planner/Administrator users retain the manual **Re-sync** button and its existing 5-minute cooldown.
+The projection computer does not need to be connected to the internet.
 
-## v1.76.30 — security, permission and consistency audit
+## What it does
 
-- Restricts clearing service activity/audit history to Administrators, both in the UI and server authorization gate.
-- Enforces ChurchSuite Off on plan-list/scan APIs and fixes Level-1 routing for the current ChurchSuite `on` mode.
-- Prevents a disabled ChurchSuite Plans route from falling through to static-file handling.
-- Adds separate ordinary-request body limits on Debian VPS, caps pathological local-password input length, and restricts inline media rendering to expected passive media types.
-- Restores public-repository `.gitignore` protections for local secrets, dependencies and generated files.
-- See `docs/SECURITY-QUALITY-AUDIT-v17630.md` for findings, remaining hardening items and validation limits.
+### Plan services collaboratively
 
-## v1.76.28 — fix ChurchSuite Plans page routing
+Create upcoming services and arrange the running order using a simple web interface.
 
-- Fixes **ChurchSuite Plans** opening as a downloaded/static file instead of the published plans web page.
-- The extension setting is now `on`, but the Worker-side published-directory route was still requiring the old literal `auto` value. The browser therefore linked to the correct path while the Worker failed to claim that route.
-- The Worker directory route and low-access service-list availability check now recognise `on`, while retaining compatibility with legacy `manual` and `auto` values.
+Service items can include:
 
-## v1.76.27 — statistics deletion and final ChurchSuite-Off Song wording
+- Songs
+- Bible passages
+- Images and notices
+- Sermon images
+- Videos
+- PDF presentations
+- Text and other run-sheet items
 
-- Settings now includes **Song statistics data** controls for deleting either a selected inclusive date range or the complete song-usage history.
-- Before deletion the Planner counts the affected usage entries, shows that count, then requires a second themed final confirmation. Songs and service plans are not deleted.
-- The deletion endpoint is under `/api/admin/`, so the existing server authorization gate restricts it to Administrators on both Cloudflare and VPS deployments.
-- Invalid or reversed date ranges are rejected both in the browser and on the server.
-- When ChurchSuite is Off, a stored template Song placeholder now displays **Empty Song position** under the song title instead of the stored **Not yet assigned in ChurchSuite** detail.
+Items can be reordered and edited as the service is prepared.
 
-## v1.76.26 — complete ChurchSuite-Off visibility cleanup
+The planner records changes and helps multiple people contribute without needing direct access to the projection computer.
 
-- The published **ChurchSuite services** link is now hidden whenever the ChurchSuite extension is Off, even if directory settings were previously enabled.
-- Service-item chips and statuses no longer expose ChurchSuite state while Off: pending update, extra ChurchSuite song, retained-on-sync and excluded-from-sync labels are hidden.
-- Empty template Song slots use the generic **Empty Song position** wording instead of **Awaiting ChurchSuite song** when ChurchSuite is Off.
-- Song editor warnings likewise become generic library/template wording while ChurchSuite is Off; ChurchSuite-specific replace-song controls are hidden.
-- Service-level ChurchSuite out-of-sync notices are hidden when the extension is Off.
-- Template creation wording is also ChurchSuite-free while the extension is Off.
-- Underlying ChurchSuite metadata is retained so turning the extension back On restores the relevant links/statuses without data loss.
+### Shared song library
 
-## v1.76.25 — simplify ChurchSuite extension to Off / On
+The planner maintains a shared OpenLP song library.
 
-- Removes the confusing **ChurchSuite manual / automatic** mode split from Settings. ChurchSuite is now simply **Off** or **On**.
-- Existing installations using legacy `manual` or `auto` values are migrated in the browser to **On**, so no saved configuration is lost.
-- When ChurchSuite is On, published-plan / multi-service sync tools are available and individual services can still use **Add/Edit ChurchSuite Plan Page URL** manually.
-- The Plan Page base address and published-plan directory settings remain available under the single enabled state.
-- When ChurchSuite is Off, all sync/import/view-plan UI remains hidden while Templates continue to work without ChurchSuite wording.
+Songs can be:
+
+- searched and added to services
+- edited centrally
+- given a usual verse order
+- imported from SongSelect
+- exported in OpenLyrics format
+- used directly when generating an OpenLP service
+
+This allows service planners to prepare the actual song order that will appear in OpenLP.
+
+### Media libraries
+
+Images, videos and PDFs can be stored and reused through shared media libraries.
+
+Image presentations support ordering, autoplay, looping and timing. PDFs are converted into image slides so they can be projected reliably without depending on PDF presentation support on the OpenLP computer.
+
+### OpenLP export
+
+When a service is ready, the planner generates an OpenLP `.osz` service file containing the required songs and projection media.
+
+The file can then be transferred to the projection computer using a USB drive, LocalSend or another file-transfer method.
+
+The planner can also record which version of a service has been downloaded for projection and warn when the online service has subsequently changed.
+
+### Service templates
+
+Reusable service templates can define the normal structure of recurring services.
+
+Templates can contain:
+
+- song positions
+- Bible-reading positions
+- notices
+- sermons
+- locally maintained projection items
+- media
+- an OpenLP theme
+
+Different recurring services can have their own default templates, while an individual service can use a different template when required.
+
+Templates work independently of ChurchSuite.
+
+### Optional ChurchSuite integration
+
+ChurchSuite integration is optional.
+
+When enabled, the planner can use the ChurchSuite Planning API to find and import published service plans.
+
+ChurchSuite items can be mapped into OpenLP Service Planner items, while locally prepared projection material can be retained between synchronisations.
+
+Import options include:
+
+- using a service template
+- songs only
+- selected ChurchSuite item types
+- all configured item types
+
+This allows ChurchSuite to remain the source of the service running order while OpenLP Service Planner manages the material needed for projection.
+
+A read-only published service-plan list can also be made available to authorised users.
+
+### Users and permissions
+
+The planner supports different levels of access so that not every user needs full planning or administration permissions.
+
+Authentication can be configured using local Planner accounts and supported single-sign-on options.
+
+Administrative functions include user management, service configuration, extensions, authentication settings, templates, backups and other system settings.
+
+## Deployment
+
+OpenLP Service Planner can run on:
+
+- **Cloudflare Workers**, using D1 for the database and R2 for media storage; or
+- a **Debian VPS**, using the included server and filesystem/SQLite-compatible storage implementation.
+
+The application is designed so that the same planner functionality is available on either deployment platform.
+
+Detailed installation instructions are provided in:
+
+- `docs/INSTALL-CLOUDFLARE.md`
+- `docs/DEBIAN-VPS.md`
+
+## Backups
+
+The planner includes backup and restore facilities for protecting planner data and media.
+
+Regular backups are strongly recommended, particularly before upgrades or significant configuration changes.
+
+## Open source
+
+OpenLP Service Planner is released under the MIT License.
+
+It is an independent project intended to complement OpenLP and, optionally, ChurchSuite. It is not an official OpenLP or ChurchSuite product.
+
+See `LICENSE` for details.- When ChurchSuite is Off, all sync/import/view-plan UI remains hidden while Templates continue to work without ChurchSuite wording.
 
 ## v1.76.24 — ChurchSuite truly optional
 
