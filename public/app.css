@@ -3872,3 +3872,44 @@ a.ms.churchsuite-signin{
 .churchsuite-service-times{display:flex;flex-direction:column;gap:5px}
 .churchsuite-service-times span{display:flex;flex-direction:column;gap:1px}
 .churchsuite-service-times small{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+
+
+/* v1.76.34 mobile service-header tidy-up */
+@media(max-width:700px){
+  .service-head .meta{
+    display:flex;
+    align-items:baseline;
+    gap:6px;
+    min-width:0;
+    white-space:nowrap;
+  }
+  #themeBtn{
+    display:inline-block;
+    min-width:0;
+    max-width:calc(100vw - 92px);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    word-break:normal;
+    overflow-wrap:normal;
+    vertical-align:bottom;
+  }
+  .service-head-actions{
+    display:grid;
+    grid-template-columns:minmax(0,1fr);
+    gap:7px;
+    width:min(100%,280px);
+    margin-top:16px;
+  }
+  #currentServiceTemplateBtn,
+  #saveCurrentServiceTemplateBtn{
+    width:100%;
+    max-width:100%;
+    min-width:0;
+  }
+  #currentServiceTemplateBtn{
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+}
