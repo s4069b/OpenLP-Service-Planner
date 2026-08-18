@@ -125,12 +125,15 @@ function loadPlannerState(){
 
 const state=loadPlannerState();
 state.services=Array.isArray(state.services)?state.services:[];
-if(state.settings?.churchSuiteDefaultImportMode==='mapped')state.settings.churchSuiteDefaultImportMode='all';
-state.settings=state.settings||{};
-if(!state.settings.timeZone)state.settings.timeZone='Australia/Brisbane';
-if(!Array.isArray(state.settings.serviceTemplates))state.settings.serviceTemplates=[];
-if(!state.settings.defaultTemplateByServiceType||typeof state.settings.defaultTemplateByServiceType!=='object')state.settings.defaultTemplateByServiceType={};
-if(!state.settings.serviceTemplateOverrideByServiceId||typeof state.settings.serviceTemplateOverrideByServiceId!=='object')state.settings.serviceTemplateOverrideByServiceId={};
+function normalisePlannerSettings(){
+  state.settings=state.settings||{};
+  if(state.settings.churchSuiteDefaultImportMode==='mapped')state.settings.churchSuiteDefaultImportMode='all';
+  if(!state.settings.timeZone)state.settings.timeZone='Australia/Brisbane';
+  if(!Array.isArray(state.settings.serviceTemplates))state.settings.serviceTemplates=[];
+  if(!state.settings.defaultTemplateByServiceType||typeof state.settings.defaultTemplateByServiceType!=='object')state.settings.defaultTemplateByServiceType={};
+  if(!state.settings.serviceTemplateOverrideByServiceId||typeof state.settings.serviceTemplateOverrideByServiceId!=='object')state.settings.serviceTemplateOverrideByServiceId={};
+}
+normalisePlannerSettings();
 
 function serviceTemplates(){return Array.isArray(state.settings.serviceTemplates)?state.settings.serviceTemplates:[];}
 function serviceTemplateById(id){return serviceTemplates().find(t=>String(t.id)===String(id));}
@@ -1161,6 +1164,7 @@ async function bootstrapRemote(){
       const browserActiveServiceId=String(state.activeServiceId||'');
       state.services=Array.isArray(data.services)?data.services:[];
       state.settings=data.settings||state.settings;
+      normalisePlannerSettings();
       // A refresh should stay on the service this browser was editing. The
       // shared server active-service value may have been changed by another
       // browser/user, so prefer the browser's saved choice when it still exists.
@@ -1186,6 +1190,7 @@ async function bootstrapRemote(){
     if(seeded?.services?.length){
       state.services=seeded.services;
       state.settings=seeded.settings||state.settings;
+      normalisePlannerSettings();
       state.activeServiceId=seeded.activeServiceId||state.services[0]?.id;
       const removedDuplicates=dedupeAllChurchSuiteItems();
       resetAllUndoBaselines();
@@ -1590,7 +1595,7 @@ function renderHeader(){
   }
   const templateButton=$('#currentServiceTemplateBtn');
   if(templateButton){
-    templateButton.textContent=`Template: ${serviceTemplateChoiceLabel(s)}`;
+    templateButton.textContent='Template';
     templateButton.title='Choose a template for this service';
   }
   const plannerSync=$('#plannerSyncChurchSuiteBtn');
@@ -6460,6 +6465,7 @@ function openServiceTemplateOverride(service=currentService()){
     if(button)button.disabled=true;
 
     try{
+      normalisePlannerSettings();
       if(value==='__default__')delete state.settings.serviceTemplateOverrideByServiceId[serviceId];
       else state.settings.serviceTemplateOverrideByServiceId[serviceId]=value;
 

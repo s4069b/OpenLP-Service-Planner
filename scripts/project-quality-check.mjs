@@ -81,6 +81,7 @@ if(!worker.includes('churchsuite_last_synced'))fail('ChurchSuite last-synced tim
 if(!app.includes("templateThemeSelect.addEventListener('change',applyTemplateThemeChange)"))fail('Template theme selector must mark template edits dirty.');
 if(!app.includes('service.items=await applyTemplateToMappedItems(selectedTemplate,previousItems,service.id,previousItems)'))fail('Service template selector must apply the selected template immediately.');
 if(!app.includes('service.theme=selectedTemplate.theme||service.theme||\'Default\''))fail('Service template selector must apply the selected template theme immediately.');
+if((app.match(/normalisePlannerSettings\(\);/g)||[]).length<4)fail('Planner settings must be normalised at startup, after remote bootstrap replacement, after seed bootstrap replacement, and before saving a service template override.');
 console.log('Project quality checks passed.');
 console.log('Native browser dialogs: none');
 console.log('PDF.js runtime source: local');
