@@ -693,6 +693,8 @@ async function saveRemotePlanner(){
       })
     });
 
+    if(redirectForExpiredPlannerSession(response))return;
+
     if(response.status===409){
       const conflict=await response.json().catch(()=>({}));
       if(document.querySelector('#saveState')) document.querySelector('#saveState').textContent='Changed elsewhere';
@@ -717,12 +719,23 @@ async function saveRemotePlanner(){
 }
 
 
+function redirectForExpiredPlannerSession(response){
+  if(response?.status!==401)return false;
+  const returnTo=`${location.pathname}${location.search}${location.hash||''}`;
+  const target=`/login?return=${encodeURIComponent(returnTo)}&error=${encodeURIComponent('Your Planner session has expired. Please sign in again.')}`;
+  location.replace(target);
+  return true;
+}
+
 async function apiFetch(path, options={}){
   const response=await fetch(path,{
     credentials:'same-origin',
     headers:{'content-type':'application/json','accept':'application/json',...(options.headers||{})},
     ...options
   });
+  if(redirectForExpiredPlannerSession(response)){
+    throw new Error('Planner session expired.');
+  }
   if(!response.ok){
     const data=await response.json().catch(()=>({}));
     throw new Error(data.error||`Request failed ${response.status}`);
@@ -1107,11 +1120,7 @@ async function bootstrapRemote(){
       credentials:'same-origin',
       cache:'no-store'
     });
-    if(response.status===401){
-      const returnTo=`${location.pathname}${location.search}`;
-      location.replace(`/login?return=${encodeURIComponent(returnTo)}`);
-      return;
-    }
+    if(redirectForExpiredPlannerSession(response))return;
     if(response.status===403){
       const data=await response.json().catch(()=>({}));
       if(
@@ -2242,6 +2251,7 @@ async function uploadMediaFile(file,serviceId,itemId,{retain=false,mediaType='fi
   if(libraryGroupId)form.set('libraryGroupId',String(libraryGroupId));
   if(libraryFolderId)form.set('libraryFolderId',String(libraryFolderId));
   const response=await fetch('/api/media',{method:'POST',body:form});
+  if(redirectForExpiredPlannerSession(response))throw new Error('Planner session expired.');
   if(!response.ok){
     const data=await response.json().catch(()=>({}));
     throw new Error(data.error||`Upload failed ${response.status}`);
@@ -2260,6 +2270,7 @@ async function uploadDirectLibraryMedia(file,mediaType,{libraryGroupId='',librar
   if(libraryGroupId)form.set('libraryGroupId',String(libraryGroupId));
   if(libraryFolderId)form.set('libraryFolderId',String(libraryFolderId));
   const response=await fetch('/api/media',{method:'POST',body:form});
+  if(redirectForExpiredPlannerSession(response))throw new Error('Planner session expired.');
   const data=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(data.error||`Upload failed (${response.status})`);
   return data;
