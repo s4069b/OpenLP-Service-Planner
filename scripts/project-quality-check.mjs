@@ -79,6 +79,8 @@ if(app.includes('data-edit-cs'))fail('Services table must not expose ChurchSuite
 if(!app.includes('churchSuiteLastSynced'))fail('Service data must retain an independent ChurchSuite last-synced timestamp.');
 if(!worker.includes('churchsuite_last_synced'))fail('ChurchSuite last-synced timestamp must persist in the service table.');
 if(!app.includes("templateThemeSelect.addEventListener('change',applyTemplateThemeChange)"))fail('Template theme selector must mark template edits dirty.');
+if(!app.includes('service.items=await applyTemplateToMappedItems(selectedTemplate,previousItems,service.id,previousItems)'))fail('Service template selector must apply the selected template immediately.');
+if(!app.includes('service.theme=selectedTemplate.theme||service.theme||\'Default\''))fail('Service template selector must apply the selected template theme immediately.');
 console.log('Project quality checks passed.');
 console.log('Native browser dialogs: none');
 console.log('PDF.js runtime source: local');

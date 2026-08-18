@@ -6455,12 +6455,46 @@ function openServiceTemplateOverride(service=currentService()){
   $('#cancelServiceTemplateChoice').onclick=cancelServiceTemplateChoice;
   setSheetCloseAction(cancelServiceTemplateChoice);
   $('#saveServiceTemplateChoice').onclick=async()=>{
+    const button=$('#saveServiceTemplateChoice');
     const value=body.querySelector('input[name="serviceTemplateChoice"]:checked')?.value||'__default__';
-    if(value==='__default__')delete state.settings.serviceTemplateOverrideByServiceId[serviceId];
-    else state.settings.serviceTemplateOverrideByServiceId[serviceId]=value;
-    persistPlanner();
-    if(remoteAvailable)await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
-    sheet.close();render();
+    if(button)button.disabled=true;
+
+    try{
+      if(value==='__default__')delete state.settings.serviceTemplateOverrideByServiceId[serviceId];
+      else state.settings.serviceTemplateOverrideByServiceId[serviceId]=value;
+
+      const selectedTemplateId=value==='__default__'?configuredDefault:(value==='__none__'?'':value);
+      const selectedTemplate=selectedTemplateId?serviceTemplateById(selectedTemplateId):null;
+
+      // Choosing a concrete template from an existing service is an Apply action,
+      // not merely a preference for the next ChurchSuite sync. Adopt its order,
+      // local/template items and OpenLP theme immediately so the service visibly
+      // refreshes as soon as the selector closes.
+      if(selectedTemplate){
+        const previousItems=structuredClone(service.items||[]);
+        service.items=await applyTemplateToMappedItems(selectedTemplate,previousItems,service.id,previousItems);
+        service.theme=selectedTemplate.theme||service.theme||'Default';
+        service.serviceTemplateId=selectedTemplate.id;
+        service.lastEditedAt=new Date().toISOString();
+        service.lastEditedBy=currentEditor();
+        service.lastEditedAction=`applied template ${selectedTemplate.name||''}`.trim();
+        markChurchSuiteOutOfSync('Template changed locally');
+      }else if(value==='__none__'){
+        service.serviceTemplateId=null;
+      }
+
+      persistPlanner();
+      if(remoteAvailable){
+        await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
+        if(selectedTemplate||value==='__none__')await createRemoteService(service);
+      }
+      sheet.close();
+      render();
+    }catch(err){
+      console.warn(err);
+      if(button)button.disabled=false;
+      await appAlert(`The template could not be applied. ${err?.message||'Please try again.'}`,{title:'Template not applied'});
+    }
   };
 }
 
