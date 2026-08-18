@@ -23,7 +23,7 @@ const packageJson=JSON.parse(pkg);
 const version=String(packageJson.version||'');
 const majorMinor=version.split('.').slice(0,2).join('.');
 if(majorMinor!=='1.76')fail(`package.json version must be 1.76.x for this release, found ${version||'(missing)'}.`);
-if(!index.includes('app.css?v=17634')||!index.includes('app.js?v=17634'))fail('index.html asset cache-busting must be v=17634.');
+if(!index.includes('app.css?v=17636')||!index.includes('app.js?v=17636'))fail('index.html asset cache-busting must be v=17636.');
 if(!worker.includes('appVersion:"1.76"'))fail('Full-backup manifest appVersion must be 1.76.');
 
 for(const key of ['CHURCHSUITE_OIDC_CLIENT_ID','CHURCHSUITE_OIDC_CLIENT_SECRET','PLANNER_SETUP_TOKEN','PLANNER_ADMIN_RECOVERY_TOKEN']){
