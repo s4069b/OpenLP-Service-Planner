@@ -2,10 +2,11 @@
   const button=document.getElementById('directoryResync');
   const status=document.getElementById('syncStatus');
   const cooldownNote=document.getElementById('syncCooldownNote');
-  if(!button||!status)return;
+  if(!status)return;
 
-  const syncUrl=button.dataset.syncUrl||location.pathname;
-  let nextAllowedAt=Number(button.dataset.nextAllowedAt||0);
+  const syncUrl=status.dataset.syncUrl||button?.dataset.syncUrl||location.pathname;
+  let nextAllowedAt=Number(button?.dataset.nextAllowedAt||0);
+  let syncing=false;
 
   const show=(text,kind)=>{
     status.hidden=false;
@@ -13,7 +14,14 @@
     status.textContent=text;
   };
 
+  const hide=()=>{
+    status.hidden=true;
+    status.className='sync-status';
+    status.textContent='';
+  };
+
   const updateCooldown=()=>{
+    if(!button)return;
     if(!nextAllowedAt){
       button.disabled=false;
       if(cooldownNote)cooldownNote.hidden=true;
@@ -36,31 +44,88 @@
     }
   };
 
-  updateCooldown();
-  setInterval(updateCooldown,1000);
+  if(button){
+    updateCooldown();
+    setInterval(updateCooldown,1000);
+  }
 
-  button.addEventListener('click',async()=>{
-    if(button.disabled)return;
-    button.disabled=true;
-    button.textContent='Syncing…';
-    show('Syncing with ChurchSuite…','sync-working');
+  const runSync=async({automatic=false}={})=>{
+    if(syncing)return;
+    syncing=true;
+    if(button){
+      button.disabled=true;
+      if(!automatic)button.textContent='Syncing…';
+    }
+
+    show(
+      automatic
+        ?'Syncing ChurchSuite… The current list remains available while this finishes.'
+        :'Syncing with ChurchSuite…',
+      'sync-working'
+    );
+
     try{
-      const response=await fetch(syncUrl,{method:'POST',headers:{accept:'application/json'},credentials:'same-origin',cache:'no-store'});
+      const target=syncUrl+(syncUrl.includes('?')?'&':'?')+(automatic?'automatic=1':'manual=1');
+      const response=await fetch(target,{
+        method:'POST',
+        headers:{accept:'application/json'},
+        credentials:'same-origin',
+        cache:'no-store'
+      });
       const data=await response.json().catch(()=>({}));
+
       if(response.status===429){
         const retrySeconds=Math.max(1,Number(data.retrySeconds||300));
         nextAllowedAt=data.nextAllowedAt?new Date(data.nextAllowedAt).getTime():Date.now()+(retrySeconds*1000);
         updateCooldown();
-        show('ChurchSuite was synced recently. Re-sync is locked for 5 minutes after each successful sync.');
+        show(
+          automatic
+            ?'ChurchSuite was refreshed recently. Using the current list.'
+            :'ChurchSuite was synced recently. Re-sync is locked for 5 minutes after each successful sync.'
+        );
+        if(automatic)setTimeout(hide,2500);
         return;
       }
-      if(response.status===409){show('A ChurchSuite sync is already running. Please wait for it to finish.');button.disabled=false;return}
-      if(!response.ok||!data.ok){show(data.error||'ChurchSuite sync failed.','error');button.disabled=false;return}
+
+      if(response.status===409){
+        show('ChurchSuite is already syncing… This page will check again shortly.','sync-working');
+        setTimeout(()=>location.reload(),4000);
+        return;
+      }
+
+      if(!response.ok||!data.ok){
+        show(data.error||'ChurchSuite sync failed.','error');
+        if(button)button.disabled=false;
+        return;
+      }
+
+      if(data.skipped){
+        hide();
+        updateCooldown();
+        return;
+      }
+
       nextAllowedAt=Date.now()+(5*60*1000);
       updateCooldown();
-      show('Sync complete. Refreshing list…');
+      show('ChurchSuite sync complete. Refreshing the service list…','sync-working');
       location.reload();
-    }catch(_){show('ChurchSuite sync failed. Please try again.','error');button.disabled=false}
-    finally{button.textContent='↻ Re-sync'}
-  });
+    }catch(_){
+      show('ChurchSuite sync failed. The existing service list is still available.','error');
+      if(button)button.disabled=false;
+    }finally{
+      syncing=false;
+      if(button&&!automatic)button.textContent='↻ Re-sync';
+    }
+  };
+
+  if(button){
+    button.addEventListener('click',()=>{
+      if(button.disabled)return;
+      runSync({automatic:false});
+    });
+  }
+
+  if(status.dataset.autoSync==='1'){
+    runSync({automatic:true});
+  }
 })();

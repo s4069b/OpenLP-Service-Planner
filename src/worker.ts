@@ -101,7 +101,7 @@ async function buildDatabaseBackup(env: Cloudflare.Env){
   return {
     format:"openlp-service-planner-database-backup",
     formatVersion:1,
-    appVersion:"1.74",
+    appVersion:"1.76",
     createdAt:new Date().toISOString(),
     note:"Database rows only. Uploaded media file bytes stored outside the database are not included.",
     tables
@@ -248,7 +248,7 @@ async function buildFullBackupManifest(env: Cloudflare.Env,databaseBackup:any){
   return {
     format:"openlp-service-planner-full-backup",
     formatVersion:1,
-    appVersion:"1.74",
+    appVersion:"1.76",
     createdAt:new Date().toISOString(),
     databaseFile:"database.json",
     mediaCount:media.length,
@@ -519,6 +519,11 @@ async function plannerSetting<T>(env: Cloudflare.Env, key: string, fallback: T):
   return safeJson(row?.value_json ?? null, fallback);
 }
 
+async function churchSuitePlanningExtensionEnabled(env:Cloudflare.Env){
+  const mode=String(await plannerSetting(env,"churchSuiteMode","off"));
+  return ["on","manual","auto"].includes(mode);
+}
+
 function normalizePublishedDirectoryPath(value: any) {
   const clean = String(value || "churchsuite-plans")
     .trim()
@@ -723,8 +728,7 @@ function formatPublishedPlanDate(dateISO: string) {
 
 async function churchSuiteServiceListAvailable(env:Cloudflare.Env){
   const enabled=await plannerSetting(env,"churchSuiteDirectoryEnabled",false);
-  const mode=await plannerSetting(env,"churchSuiteMode","off");
-  return !!enabled && String(mode)==="auto";
+  return !!enabled && await churchSuitePlanningExtensionEnabled(env);
 }
 
 function firstLoginAccessPage(user:any,serviceListAvailable:boolean,continueTo:string){
@@ -799,23 +803,44 @@ p{color:#6e6e73;margin:8px 0}
 async function publishedChurchSuiteDirectory(request: Request, env: Cloudflare.Env) {
   const user=await getAuthUser(request,env);
   const enabled = await plannerSetting(env, "churchSuiteDirectoryEnabled", false);
-  const mode = await plannerSetting(env, "churchSuiteMode", "off");
-
-  // If an administrator turns the optional Service List off while somebody is
-  // already signed in, do not return a bare 404 here. Let the global Level-1
-  // permission gate below redirect that user to the stable notification page.
-  if (!enabled || String(mode)!=="auto") return null;
-
   const configuredPath = normalizePublishedDirectoryPath(
     await plannerSetting(env, "churchSuiteDirectoryPath", "churchsuite-plans")
   );
   const url=new URL(request.url);
+  const routeMatch=url.pathname===configuredPath || url.pathname===`${configuredPath}/`;
+  const extensionEnabled=await churchSuitePlanningExtensionEnabled(env);
+
+  // A disabled published-plan route must never fall through to static asset
+  // handling; that previously produced confusing file-download behaviour.
+  if(routeMatch && (!enabled || !extensionEnabled)){
+    return new Response("ChurchSuite service plans are not enabled.",{
+      status:404,
+      headers:{"content-type":"text/plain; charset=utf-8","cache-control":"no-store"}
+    });
+  }
+  if (!enabled || !extensionEnabled) return null;
+
   if(url.pathname!==configuredPath && url.pathname!==`${configuredPath}/`) {
     return null;
   }
 
+  const canResync=Number(user?.accessLevel||0)>=2;
+  let cache = await env.DB.prepare(
+    "SELECT plans_json,synced_at,range_start,range_end FROM churchsuite_plan_directory_cache WHERE id=1"
+  ).first<any>();
+  const lastCachedSyncDate=cache?.synced_at
+    ?new Date(String(cache.synced_at).replace(" ","T")+"Z")
+    :null;
+  const automaticRefreshMs=15*60*1000;
+  const automaticRefreshDue=!lastCachedSyncDate || (Date.now()-lastCachedSyncDate.getTime()>=automaticRefreshMs);
+
   let syncError="";
   if(request.method==="POST"){
+    const automatic=url.searchParams.get("automatic")==="1";
+    if(!automatic&&!canResync)return json({error:"Planner access is required to manually re-sync ChurchSuite."},{status:403});
+    if(automatic&&!automaticRefreshDue){
+      return json({ok:true,skipped:true,reason:"cache-fresh"});
+    }
     try{
       const result:any=await syncChurchSuitePublishedDirectory(env,{forceInitial:true});
       if(result?.throttled){
@@ -852,21 +877,8 @@ async function publishedChurchSuiteDirectory(request: Request, env: Cloudflare.E
     return new Response("Method not allowed",{status:405});
   }
 
-  let cache = await env.DB.prepare(
-    "SELECT plans_json,synced_at,range_start,range_end FROM churchsuite_plan_directory_cache WHERE id=1"
-  ).first<any>();
-
-  if(!cache?.synced_at){
-    try{
-      await syncChurchSuitePublishedDirectory(env);
-      cache = await env.DB.prepare(
-        "SELECT plans_json,synced_at,range_start,range_end FROM churchsuite_plan_directory_cache WHERE id=1"
-      ).first<any>();
-    }catch(error:any){
-      syncError=String(error?.message||error);
-    }
-  }
-
+  // Return the current cache immediately. If it is stale or missing, the
+  // rendered page starts a server-authorised refresh and shows progress.
   const plans=safeJson<any[]>(cache?.plans_json||"[]",[]);
   const showPlannerStatus=await plannerSetting(env,"churchSuiteDirectoryShowPlannerStatus",true);
   const showSongs=await plannerSetting(env,"churchSuiteDirectoryShowSongs",true);
@@ -916,9 +928,7 @@ async function publishedChurchSuiteDirectory(request: Request, env: Cloudflare.E
     </a>`;
   }).join("");
 
-  const lastSyncDate=cache?.synced_at
-    ? new Date(String(cache.synced_at).replace(" ","T")+"Z")
-    : null;
+  const lastSyncDate=lastCachedSyncDate;
   const lastSync=lastSyncDate
     ? lastSyncDate.toLocaleString("en-AU",{dateStyle:"medium",timeStyle:"short"})
     : "Not yet synced";
@@ -955,7 +965,7 @@ button:hover{background:#fafafa}.list{border:1px solid var(--line);border-radius
 .songs-none b,.planner-amended b{background:rgba(190,69,62,.09);color:#92514c}
 .planner-status:not(.has-value) b{min-height:17px;padding:0;background:transparent}.arrow{font-size:24px;color:#a1a1a6;text-align:right}
 .empty{padding:34px;text-align:center;color:var(--muted)}.error{margin:0 0 16px;padding:10px 12px;border-radius:10px;background:#fff1f0;color:#8b2b25;border:1px solid #f2c9c5;font-size:12px}
-.directory-control-stack{display:flex;flex-direction:column;align-items:flex-end;gap:5px}.directory-actions{display:flex;gap:8px;flex-wrap:wrap}.directory-actions form{margin:0}.directory-actions a,.directory-actions form button{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);padding:9px 13px;font:600 13px inherit}.directory-actions a:hover,.directory-actions form button:hover{background:#fafafa}.directory-actions button:disabled{opacity:.45;cursor:not-allowed;background:#f4f4f5}.planner-return-link{font-size:10px;color:var(--muted);text-decoration:none}.planner-return-link:hover{text-decoration:underline}.sync-cooldown-note{font-size:10px;color:var(--muted);text-align:right}.sync-status{margin:-8px 0 16px;padding:9px 11px;border-radius:10px;background:rgba(0,113,227,.06);color:#4e6377;font-size:12px}.sync-status.error{background:#fff1f0;color:#8b2b25}.sync-working:before{content:"";display:inline-block;width:11px;height:11px;border:2px solid rgba(0,0,0,.15);border-top-color:#555;border-radius:50%;margin-right:7px;vertical-align:-2px;animation:dirSpin .7s linear infinite}@keyframes dirSpin{to{transform:rotate(360deg)}}.footer{margin-top:14px;color:var(--muted);font-size:11px;text-align:center}
+.directory-control-stack{display:flex;flex-direction:column;align-items:flex-end;gap:5px}.directory-actions{display:flex;gap:8px;flex-wrap:wrap}.directory-actions form{margin:0}.directory-actions a,.directory-actions form button{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);padding:9px 13px;font:600 13px inherit}.directory-actions a:hover,.directory-actions form button:hover{background:#fafafa}.directory-actions button:disabled{opacity:.45;cursor:not-allowed;background:#f4f4f5}.planner-return-link{font-size:10px;color:var(--muted);text-decoration:none}.planner-return-link:hover{text-decoration:underline}.sync-cooldown-note{font-size:10px;color:var(--muted);text-align:right}.sync-status{margin:-8px 0 16px;padding:9px 11px;border-radius:10px;background:rgba(0,113,227,.06);color:#4e6377;font-size:12px}.sync-status.error{background:#fff1f0;color:#8b2b25}.sync-status.sync-working{display:flex;align-items:center;gap:9px}.sync-status.sync-working::before{content:"";width:12px;height:12px;border:2px solid rgba(49,90,131,.25);border-top-color:#315a83;border-radius:50%;animation:directory-spin .8s linear infinite}@keyframes directory-spin{to{transform:rotate(360deg)}}.sync-working:before{content:"";display:inline-block;width:11px;height:11px;border:2px solid rgba(0,0,0,.15);border-top-color:#555;border-radius:50%;margin-right:7px;vertical-align:-2px;animation:dirSpin .7s linear infinite}@keyframes dirSpin{to{transform:rotate(360deg)}}.footer{margin-top:14px;color:var(--muted);font-size:11px;text-align:center}
 @media(max-width:600px){.wrap{width:min(100% - 22px,820px);padding-top:30px}.header{align-items:flex-start;flex-direction:column}.directory-control-stack{align-items:flex-start}h1{font-size:28px}.plan,.plan.with-status,.plan.with-songs,.plan.with-status.with-songs{grid-template-columns:1fr 20px;gap:5px 10px}.date{grid-column:1;font-size:12px;color:var(--muted)}.detail{grid-column:1}.indicator{grid-column:1;margin-top:4px}.indicator small{font-size:8px}.arrow{grid-column:2;grid-row:1/6}}
 </style>
 </head>
@@ -969,14 +979,14 @@ button:hover{background:#fafafa}.list{border:1px solid var(--line);border-radius
   </div>
   <div class="directory-control-stack">
     <div class="directory-actions">
-      <button type="button" id="directoryResync" data-sync-url="${htmlEscape(configuredPath)}" data-next-allowed-at="${nextSyncAllowedAt}" ${syncCooldownActive?'disabled':''}>↻ Re-sync</button>
+      ${canResync?`<button type="button" id="directoryResync" data-sync-url="${htmlEscape(configuredPath)}" data-next-allowed-at="${nextSyncAllowedAt}" ${syncCooldownActive?'disabled':''}>↻ Re-sync</button>`:""}
       <form method="post" action="/auth/logout"><button type="submit">Log out</button></form>
     </div>
-    ${Number(user?.accessLevel||0)>=2?`<a class="planner-return-link" href="/">Back to OpenLP Service Planner</a>`:""}
-    <div class="sync-cooldown-note" id="syncCooldownNote" ${syncCooldownActive?'':'hidden'}></div>
+    ${canResync?`<a class="planner-return-link" href="/">Back to OpenLP Service Planner</a>`:""}
+    ${canResync?`<div class="sync-cooldown-note" id="syncCooldownNote" ${syncCooldownActive?'':'hidden'}></div>`:""}
   </div>
 </header>
-<div id="syncStatus" class="sync-status" hidden></div>
+<div id="syncStatus" class="sync-status" data-sync-url="${htmlEscape(configuredPath)}" data-auto-sync="${automaticRefreshDue?'1':'0'}" hidden></div>
 ${syncError?`<div class="error">${htmlEscape(syncError)}</div>`:""}
 <section class="list">${rows||'<div class="empty">No published service plans are currently available.</div>'}</section>
 <div class="footer">OpenLP Service Planner</div>
@@ -2315,6 +2325,10 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
   }
 
   if (path === "/api/churchsuite/plans" && request.method === "GET") {
+    if(!(await churchSuitePlanningExtensionEnabled(env))){
+      return json({error:"ChurchSuite extension is disabled."},{status:409});
+    }
+
     try {
       const params = new URLSearchParams();
       params.set("status", "published");
@@ -2338,6 +2352,10 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
   }
 
   if (path === "/api/churchsuite/scan-plan" && request.method === "POST") {
+    if(!(await churchSuitePlanningExtensionEnabled(env))){
+      return json({error:"ChurchSuite extension is disabled."},{status:409});
+    }
+
     const body = await request.json<any>();
 
     try {
@@ -2389,7 +2407,7 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
     try{
       const body=await request.json<any>();
       if(Number(body.accessLevel||1)===1 && !(await churchSuiteServiceListAvailable(env))){
-        return json({error:"ChurchSuite Service list access is unavailable because Automatic ChurchSuite and Service List publishing are not both enabled."},{status:400});
+        return json({error:"ChurchSuite Service list access is unavailable because ChurchSuite and Service List publishing are not both enabled."},{status:400});
       }
       await createLocalUser(env,body);
       return json({ok:true,users:await listUsers(env)})
@@ -2402,7 +2420,7 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
       const me=await getRequestUser(request,env);
       const body=await request.json<any>();
       if(Number(body.accessLevel||1)===1 && !(await churchSuiteServiceListAvailable(env))){
-        return json({error:"ChurchSuite Service list access is unavailable because Automatic ChurchSuite and Service List publishing are not both enabled."},{status:400});
+        return json({error:"ChurchSuite Service list access is unavailable because ChurchSuite and Service List publishing are not both enabled."},{status:400});
       }
       await updateManagedUser(env,decodeURIComponent(managedUserMatch[1]),body,me.email);
       return json({ok:true,users:await listUsers(env)})
@@ -2564,6 +2582,32 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
   }
 
 
+
+  if (path === "/api/admin/song-usage" && request.method === "DELETE") {
+    const body=await request.json<any>().catch(()=>({}));
+    const all=body?.all===true;
+    const from=String(body?.from||"").trim();
+    const to=String(body?.to||"").trim();
+
+    if(!all){
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(from)||!/^\d{4}-\d{2}-\d{2}$/.test(to)){
+        return json({error:"A valid From and To date are required."},{status:400});
+      }
+      if(from>to)return json({error:"The From date must be on or before the To date."},{status:400});
+    }
+
+    const countRow=all
+      ?await env.DB.prepare("SELECT COUNT(*) AS total FROM song_usage").first<any>()
+      :await env.DB.prepare("SELECT COUNT(*) AS total FROM song_usage WHERE usage_day>=? AND usage_day<=?").bind(from,to).first<any>();
+    const deleted=Number(countRow?.total||0);
+
+    if(deleted){
+      if(all)await env.DB.prepare("DELETE FROM song_usage").run();
+      else await env.DB.prepare("DELETE FROM song_usage WHERE usage_day>=? AND usage_day<=?").bind(from,to).run();
+    }
+
+    return json({ok:true,deleted,from:all?null:from,to:all?null:to,all});
+  }
 
   if (path === "/api/song-usage/stats" && request.method === "GET") {
     const from=String(url.searchParams.get("from")||"").trim();
@@ -3288,9 +3332,12 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
     if (!object) return json({ error: "Media object missing." }, { status: 404 });
 
     const headers = new Headers();
-    headers.set("content-type", row.content_type || "application/octet-stream");
-    const download=url.searchParams.get("download")==="1";
-    headers.set("content-disposition", `${download?"attachment":"inline"}; filename="${row.original_name.replace(/"/g, "")}"`);
+    const contentType=String(row.content_type||"application/octet-stream").toLowerCase();
+    headers.set("content-type",contentType);
+    const safeInline=/^(?:image\/(?:jpeg|png|webp|gif)|video\/(?:mp4|webm|quicktime)|application\/pdf)(?:;|$)/i.test(contentType);
+    const download=url.searchParams.get("download")==="1" || !safeInline;
+    const safeFileName=String(row.original_name||"media").replace(/["\r\n]/g,"");
+    headers.set("content-disposition", `${download?"attachment":"inline"}; filename="${safeFileName}"`);
     return new Response(object.body, { headers });
   }
 
@@ -3340,7 +3387,8 @@ export default {
     }
 
     if(url.pathname.startsWith("/api/")){
-      const adminOnly=url.pathname==="/api/settings"||url.pathname.startsWith("/api/admin/")||url.pathname==="/api/full-backup"||url.pathname==="/api/full-restore"||url.pathname==="/api/full-restore-preview"||url.pathname==="/api/database-backup"||url.pathname==="/api/database-restore"||url.pathname==="/api/seed";
+      const clearingAudit=request.method==="DELETE"&&/^\/api\/services\/[^/]+\/audit$/.test(url.pathname);
+      const adminOnly=url.pathname==="/api/settings"||url.pathname==="/api/churchsuite/status"||url.pathname==="/api/churchsuite/service-names"||url.pathname.startsWith("/api/admin/")||url.pathname==="/api/full-backup"||url.pathname==="/api/full-restore"||url.pathname==="/api/full-restore-preview"||url.pathname==="/api/database-backup"||url.pathname==="/api/database-restore"||url.pathname==="/api/seed"||clearingAudit;
       if(adminOnly&&user.accessLevel<3)return secureResponse(json({error:"Administrator access is required."},{status:403}));
       return secureResponse(await handleApi(request,env));
     }

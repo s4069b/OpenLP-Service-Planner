@@ -1,0 +1,24 @@
+# Local-development example only. Copy to .dev.vars and fill in your own values.
+# Never commit .dev.vars.
+
+MICROSOFT_TENANT_ID=your-entra-tenant-id
+MICROSOFT_CLIENT_ID=your-entra-application-client-id
+MICROSOFT_CLIENT_SECRET=your-entra-client-secret
+MICROSOFT_ALLOWED_DOMAIN=example.org
+
+# Optional ChurchSuite integration
+CHURCHSUITE_CLIENT_ID=your-churchsuite-client-id
+CHURCHSUITE_CLIENT_SECRET=your-churchsuite-client-secret
+
+
+# Optional only for establishing the first Administrator on a fresh install.
+# Remove after that Administrator has signed in.
+PLANNER_BOOTSTRAP_ADMIN_EMAIL=admin@example.org
+
+# One-time first-Administrator setup. Use a long random value, open /setup,
+# create the first local Administrator, then remove this setting.
+PLANNER_SETUP_TOKEN=replace-with-a-long-random-secret
+
+# Optional MyChurchSuite OAuth2 sign-in (separate from ChurchSuite API sync)
+CHURCHSUITE_OIDC_CLIENT_ID=
+CHURCHSUITE_OIDC_CLIENT_SECRET=

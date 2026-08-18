@@ -1,0 +1,31 @@
+name: Build and portability checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cloudflare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install
+      - run: npm run check:browser
+      - run: npm run test:migrations
+      - run: npm run check:cloudflare
+      - run: npx wrangler deploy --dry-run --outdir .cloudflare-dry-run
+
+  vps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install
+      - run: npm run check:browser
+      - run: npm run test:migrations
+      - run: npm run test:vps

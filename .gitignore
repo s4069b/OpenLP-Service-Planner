@@ -1,12 +1,19 @@
+# Dependencies and generated build output
 node_modules/
-worker-configuration.d.ts
-.wrangler/
 .vps-dist/
 .cloudflare-dry-run/
+.wrangler/
+worker-configuration.d.ts
+public/vendor/pdfjs/
+
+# Local data and secrets
+data/
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
 .env
 .env.*
-*.log
+
+# Local/editor noise
 .DS_Store
-data/
-public/vendor/pdfjs/
+*.log

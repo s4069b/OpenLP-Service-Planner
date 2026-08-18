@@ -55,7 +55,15 @@ export async function nodeRequestToWeb(req){
   const method=String(req.method||"GET").toUpperCase();
   const init={method,headers};
   if(!["GET","HEAD"].includes(method)){
-    const maxMb=Math.max(1,Number(process.env.PLANNER_MAX_UPLOAD_MB||250));
+    const pathname=url.pathname;
+    const largeBodyRoute=
+      pathname==="/api/media" ||
+      pathname==="/api/full-restore" ||
+      pathname==="/api/full-restore-preview" ||
+      pathname==="/api/database-restore";
+    const maxMb=largeBodyRoute
+      ?Math.max(1,Number(process.env.PLANNER_MAX_UPLOAD_MB||250))
+      :Math.max(1,Number(process.env.PLANNER_MAX_REQUEST_MB||10));
     init.body=streamingRequestBody(req,maxMb*1024*1024);
     // Required by Node's WHATWG Request implementation for streaming bodies.
     init.duplex="half";

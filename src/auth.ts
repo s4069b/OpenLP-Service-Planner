@@ -63,7 +63,7 @@ async function destinationForUser(env:Cloudflare.Env,user:PlannerAuthUser,reques
     try{churchSuiteMode=String(JSON.parse(String(modeRow?.value_json??'"off"'))||"off")}catch(_){}
     try{directoryPath=String(JSON.parse(String(pathRow?.value_json??'"churchsuite-plans"'))||"churchsuite-plans")}catch(_){}
 
-    const serviceListAvailable=directoryEnabled && churchSuiteMode==="auto";
+    const serviceListAvailable=directoryEnabled && ["on","manual","auto"].includes(churchSuiteMode);
     const clean=`/${directoryPath.replace(/^\/+|\/+$/g,"")}`;
     // Never send a ChurchSuite-Service-list-only account to the main Planner
     // when the feature is unavailable. This stable notice route is also safe
@@ -83,7 +83,7 @@ function friendly(email:string){
   const local=email.split("@")[0]||"User";
   return local.split(/[._-]+/).filter(Boolean).map(x=>x[0]?.toUpperCase()+x.slice(1)).join(" ")||email;
 }
-function allowedDomain(env:Cloudflare.Env){return String(envAny(env).MICROSOFT_ALLOWED_DOMAIN||"example.org").toLowerCase()}
+function allowedDomain(env:Cloudflare.Env){return String(envAny(env).MICROSOFT_ALLOWED_DOMAIN||"kpc.org.au").toLowerCase()}
 function bootstrapAdminEmail(env:Cloudflare.Env){
   return String(envAny(env).PLANNER_BOOTSTRAP_ADMIN_EMAIL||"").trim().toLowerCase();
 }
@@ -429,6 +429,7 @@ export async function handleAuthRequest(request:Request,env:Cloudflare.Env):Prom
     const fail=(message:string)=>Response.redirect(`${url.origin}/admin-recovery?error=${encodeURIComponent(message)}`,303);
     if(!await secureTextEquals(supplied,adminRecoveryToken(env)))return fail("Recovery token was not accepted.");
     if(password.length<12)return fail("Use a password of at least 12 characters.");
+    if(password.length>1024)return fail("Password is too long.");
     if(password!==confirmPassword)return fail("The new passwords do not match.");
     const row=await userByEmail(env,email);
     if(!row||Number(row.disabled||0)||Number(row.access_level||0)!==3||row.auth_method!=="local")return fail("That email is not an enabled local Administrator account.");
@@ -505,10 +506,11 @@ export async function handleAuthRequest(request:Request,env:Cloudflare.Env):Prom
     }
     const form=await request.formData(),email=String(form.get("email")||"").trim().toLowerCase();
     const password=String(form.get("password")||""),returnTo=safeReturnTo(String(form.get("return")||"/"));
+    const passwordTooLong=password.length>1024;
     const row=await userByEmail(env,email);
     const locked=row?.locked_until&&new Date(String(row.locked_until).replace(" ","T")+"Z").getTime()>Date.now();
     let valid=false;
-    if(row&&!locked&&!Number(row.disabled||0)&&row.auth_method==="local"&&row.password_hash&&row.password_salt){
+    if(row&&!passwordTooLong&&!locked&&!Number(row.disabled||0)&&row.auth_method==="local"&&row.password_hash&&row.password_salt){
       valid=await verifyPassword(
         password,
         String(row.password_salt),
@@ -527,7 +529,7 @@ export async function handleAuthRequest(request:Request,env:Cloudflare.Env):Prom
             locked_until=CASE WHEN ?>=5 THEN datetime('now','+15 minutes') ELSE NULL END,
             updated_at=datetime('now') WHERE email=?`).bind(failures,failures,email).run();
         }
-      }else await passwordHash(password||"invalid-password");
+      }else await passwordHash(passwordTooLong?"invalid-password":(password||"invalid-password"));
       return Response.redirect(`${url.origin}/login?return=${encodeURIComponent(returnTo)}&error=${encodeURIComponent("Email or password was not accepted.")}`,303);
     }
     const firstLogin=!row?.last_login_at;
@@ -820,6 +822,7 @@ export async function createLocalUser(env:Cloudflare.Env,input:any){
   const accessLevel=Math.max(1,Math.min(3,Number(input.accessLevel||1))),password=String(input.password||"");
   if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))throw new Error("Enter a valid email address.");
   if(password.length<12)throw new Error("Local passwords must be at least 12 characters.");
+  if(password.length>1024)throw new Error("Local passwords must be no more than 1024 characters.");
   if(await userByEmail(env,email))throw new Error("A user with that email already exists.");
   const p=await passwordHash(password);
   await env.DB.prepare(`INSERT INTO users(email,display_name,auth_method,access_level,disabled,password_hash,password_salt,password_iterations,created_at,updated_at)
@@ -849,6 +852,7 @@ export async function resetLocalUserPassword(env:Cloudflare.Env,email:string,pas
   const row=await userByEmail(env,email);
   if(!row||row.auth_method!=="local")throw new Error("That is not a local-password account.");
   if(password.length<12)throw new Error("Local passwords must be at least 12 characters.");
+  if(password.length>1024)throw new Error("Local passwords must be no more than 1024 characters.");
   const p=await passwordHash(password);
   await env.DB.prepare(`UPDATE users SET password_hash=?,password_salt=?,password_iterations=?,failed_login_count=0,
     locked_until=NULL,updated_at=datetime('now') WHERE email=?`).bind(p.hash,p.salt,p.iterations,email).run();

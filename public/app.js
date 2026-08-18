@@ -128,6 +128,58 @@ state.services=Array.isArray(state.services)?state.services:[];
 if(state.settings?.churchSuiteDefaultImportMode==='mapped')state.settings.churchSuiteDefaultImportMode='all';
 state.settings=state.settings||{};
 if(!state.settings.timeZone)state.settings.timeZone='Australia/Brisbane';
+if(!Array.isArray(state.settings.serviceTemplates))state.settings.serviceTemplates=[];
+if(!state.settings.defaultTemplateByServiceType||typeof state.settings.defaultTemplateByServiceType!=='object')state.settings.defaultTemplateByServiceType={};
+if(!state.settings.serviceTemplateOverrideByServiceId||typeof state.settings.serviceTemplateOverrideByServiceId!=='object')state.settings.serviceTemplateOverrideByServiceId={};
+
+function serviceTemplates(){return Array.isArray(state.settings.serviceTemplates)?state.settings.serviceTemplates:[];}
+function serviceTemplateById(id){return serviceTemplates().find(t=>String(t.id)===String(id));}
+function configuredDefaultTemplateIdForService(service){
+  const serviceTypeId=String(service?.serviceTypeId||'');
+  return serviceTypeId?String(state.settings.defaultTemplateByServiceType?.[serviceTypeId]||''):'';
+}
+function defaultTemplateIdForService(service){
+  const serviceId=String(service?.id||'');
+  const overrides=state.settings.serviceTemplateOverrideByServiceId||{};
+  if(serviceId && Object.prototype.hasOwnProperty.call(overrides,serviceId)){
+    const value=String(overrides[serviceId]||'');
+    return value==='__none__'?'':value;
+  }
+  return configuredDefaultTemplateIdForService(service);
+}
+function serviceTemplateChoiceLabel(service){
+  const effective=defaultTemplateIdForService(service);
+  const configured=configuredDefaultTemplateIdForService(service);
+  const overrides=state.settings.serviceTemplateOverrideByServiceId||{};
+  const hasOverride=!!service?.id&&Object.prototype.hasOwnProperty.call(overrides,String(service.id));
+  if(!effective)return hasOverride?'No template · service override':'No template';
+  const name=serviceTemplateById(effective)?.name||'Template';
+  return hasOverride?`${name} · service override`:configured&&effective===configured?`${name} · default`:name;
+}
+function defaultTemplateIdForPlanTitle(title){
+  const mapped=churchSuiteMappedServiceType(title||'');
+  return mapped?.serviceTypeId?String(state.settings.defaultTemplateByServiceType?.[String(mapped.serviceTypeId)]||''):'';
+}
+function churchSuiteTemplateServiceType(planTitle,existing=null){
+  if(existing?.serviceTypeId)return serviceTypeById(existing.serviceTypeId)||{
+    id:String(existing.serviceTypeId),
+    name:String(existing.serviceTypeName||planTitle||'Service')
+  };
+  const mapped=churchSuiteMappedServiceType(planTitle||'');
+  if(mapped?.serviceTypeId){
+    const type=serviceTypeById(mapped.serviceTypeId);
+    if(type)return type;
+  }
+  const norm=value=>String(value||'').toLowerCase().replace(/[^a-z0-9]+/g,'');
+  const titleNorm=norm(planTitle);
+  return regularServiceTypes()
+    .filter(type=>titleNorm.startsWith(norm(type.name)))
+    .sort((a,b)=>norm(b.name).length-norm(a.name).length)[0]||null;
+}
+function importModeLabel(mode,templateId=''){
+  if(mode==='template')return `Template: ${serviceTemplateById(templateId)?.name||'Choose template'}`;
+  return mode==='songs'?'Songs only':mode==='select'?'Selected Types':'All configured Types';
+}
 
 const DEFAULT_REGULAR_SERVICE_TYPES=[
   {id:'morning-church',name:'Morning Church',weekday:0,defaultTheme:state.settings.defaultMorningTheme||'KSSS (am) white'},
@@ -152,6 +204,14 @@ function regularServiceTypes(){
 function serviceTypeById(id){
   return regularServiceTypes().find(x=>String(x.id)===String(id));
 }
+function plannerThemeNames(){
+  return [...new Set([
+    'Default',
+    'KSSS (am) white',
+    'KSSS (am)',
+    ...((state.settings.customThemes||[]).map(x=>String(x||'').trim()).filter(Boolean))
+  ])];
+}
 function churchSuiteServiceMappings(){
   return Array.isArray(state.settings.churchSuiteServiceMappings)
     ?state.settings.churchSuiteServiceMappings.map(x=>({
@@ -172,6 +232,27 @@ function inferChurchSuitePlannerTypeId(planTitle){
 
   return matches[0]?.id||'one-off';
 }
+function churchSuitePlanSelectionGroup(planTitle){
+  const title=String(planTitle||'').trim();
+  const lower=title.toLowerCase();
+  const match=regularServiceTypes()
+    .filter(t=>lower.startsWith(String(t.name||'').trim().toLowerCase()))
+    .sort((a,b)=>String(b.name||'').length-String(a.name||'').length)[0];
+  if(match)return {key:`type:${match.id}`,label:String(match.name||title)};
+
+  const mapped=churchSuiteServiceMappings().find(x=>String(x.churchSuiteName||'').trim().toLowerCase()===lower);
+  if(mapped?.plannerTypeId&&mapped.plannerTypeId!=='one-off'){
+    const type=serviceTypeById(mapped.plannerTypeId);
+    if(type)return {key:`type:${type.id}`,label:String(type.name||title)};
+  }
+
+  // For an unmapped title, use the leading words before the usual title
+  // separators. This keeps useful ChurchSuite prefixes available without
+  // making assumptions about the remainder of the event title.
+  const prefix=title.split(/\s+(?:[-–—|:]|\d{1,2}[:.]\d{2})/)[0].trim();
+  return {key:`prefix:${prefix.toLowerCase()}`,label:prefix||title||'Other'};
+}
+
 function churchSuiteMappedServiceType(planTitle){
   const title=String(planTitle||'').trim().toLowerCase();
   const row=churchSuiteServiceMappings().find(x=>x.churchSuiteName.toLowerCase()===title);
@@ -694,6 +775,7 @@ async function saveServiceMeta(){
           churchSuitePlanUrl:s.churchSuitePlanUrl||null,
           churchSuiteLastUpdated:s.churchSuiteLastUpdated||null,
           churchSuiteImportMode:s.churchSuiteImportMode||null,
+          serviceTemplateId:s.serviceTemplateId||null,
           churchSuiteOutOfSync:!!s.churchSuiteOutOfSync,
           churchSuiteOutOfSyncReason:s.churchSuiteOutOfSyncReason||null
         }
@@ -1490,11 +1572,16 @@ function renderHeader(){
 
   const syncNote=$('#churchSuiteSyncNote');
   if(syncNote){
-    const show=!!(s.churchSuiteOutOfSync && (s.churchSuitePlanId||s.churchSuitePlanUrl));
+    const show=!!(churchSuiteEnabled()&&s.churchSuiteOutOfSync && (s.churchSuitePlanId||s.churchSuitePlanUrl));
     syncNote.hidden=!show;
     syncNote.textContent=show
       ?`ChurchSuite: local service differs${s.churchSuiteOutOfSyncReason?` — ${s.churchSuiteOutOfSyncReason}`:''}.`
       :'';
+  }
+  const templateButton=$('#currentServiceTemplateBtn');
+  if(templateButton){
+    templateButton.textContent=`Template: ${serviceTemplateChoiceLabel(s)}`;
+    templateButton.title='Choose a template for this service';
   }
   const plannerSync=$('#plannerSyncChurchSuiteBtn');
   if(plannerSync){
@@ -1505,7 +1592,7 @@ function renderHeader(){
   // specific service has a validated, saved ChurchSuite Plan Page URL.
   const footerSync=$('#plannerSyncChurchSuiteBtn');
   let plannerViewPlan=$('#plannerViewChurchSuiteBtn');
-  const planUrl=actualChurchSuitePlanUrl(s);
+  const planUrl=churchSuiteEnabled()?actualChurchSuitePlanUrl(s):'';
   if(planUrl){
     if(!plannerViewPlan){
       plannerViewPlan=document.createElement('a');
@@ -1549,13 +1636,13 @@ function render(){
   renderHeader();
   persistPlanner();
   const visibleItems=openLPOnlyView?state.items.filter(x=>x.projected):state.items;
-  list.innerHTML=visibleItems.map(x=>`<article class="item ${x.projected&&!x.ready?'needs-editing':''}" data-id="${x.id}">
+  list.innerHTML=visibleItems.map(x=>`<article class="item ${x.projected&&!x.ready?'needs-editing':''} ${x.templateProtected?'template-protected':x.retainOnChurchSuiteSync?'churchsuite-retained':''}" data-id="${x.id}">
     <button class="handle" type="button" title="Drag to reorder" aria-label="Drag ${esc(x.title)} to reorder">≡</button>
     <div>
       <div class="item-title">${esc(x.title)}</div>
       <div class="item-sub">
         ${x.person?`<span class="person">${esc(x.person)}</span>`:''}
-        ${x.detail?`<span>${esc(x.detail)}</span>`:''}
+        ${serviceItemDetailForDisplay(x)?`<span>${esc(serviceItemDetailForDisplay(x))}</span>`:''}
         ${x.type==='song'&&x.musicNote?`<span class="music-note">♪ ${esc(x.musicNote)}</span>`:''}
         ${x.projected?'<span class="projection-chip">Projection</span>':'<span>Run sheet only</span>'}
         ${(x.ignoreImages||x.ignoreVideo||x.ignoreBible)?'<span class="no-attachments-chip">No attachments</span>':''}
@@ -1577,13 +1664,16 @@ function render(){
             <span>Ignore Bible</span>
           </label>
         `:''}
-        ${x.type==='song'&&x.churchSuiteWritePending?`<span class="churchsuite-pending-chip">ChurchSuite update pending</span>`:''}
-        ${x.churchSuiteExcludedFromLastSync?`<span class="churchsuite-not-synced-chip">Not included in latest ChurchSuite sync</span>`:''}
+        ${churchSuiteEnabled()&&x.type==='song'&&x.churchSuiteWritePending?`<span class="churchsuite-pending-chip">ChurchSuite update pending</span>`:''}
+        ${churchSuiteEnabled()&&x.type==='song'&&x.extraChurchSuiteSong?`<span class="churchsuite-extra-song-chip">Extra ChurchSuite song</span>`:''}
+        ${x.type==='song'&&x.templateSongPlaceholder?`<span class="template-song-placeholder-chip">${churchSuiteEnabled()?'Awaiting ChurchSuite song':'Empty Song position'}</span>`:''}
+        ${x.templateProtected?`<span class="template-item-chip">Template</span>`:(churchSuiteEnabled()&&x.retainOnChurchSuiteSync)?`<span class="churchsuite-retained-chip">Kept on ChurchSuite sync</span>`:''}
+        ${churchSuiteEnabled()&&x.churchSuiteExcludedFromLastSync?`<span class="churchsuite-not-synced-chip">Not included in latest ChurchSuite sync</span>`:''}
       </div>
     </div>
     <div class="item-actions">
       ${x.projected?`<div class="status ${x.ready?'ready':'missing'}">${x.ready
-        ?(x.type==='song'&&x.churchSuiteSourceId&&x.churchSuiteWritePending?'✓ Local copy updated':'✓ Ready')
+        ?(churchSuiteEnabled()&&x.type==='song'&&x.churchSuiteSourceId&&x.churchSuiteWritePending?'✓ Local copy updated':'✓ Ready')
         :'○ Missing'}</div>`:'<div class="status">Plan</div>'}
       <button class="item-delete" type="button" data-delete="${x.id}" aria-label="Delete ${esc(x.title)}" title="Delete item"><svg class="trash-icon" viewBox="0 0 24 24" aria-hidden="true">
 <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/>
@@ -1824,11 +1914,28 @@ function startReorder(e, source){
   document.addEventListener('pointerup',finish,{passive:false});
   document.addEventListener('pointercancel',finish,{passive:false});
 }
+function cleanupSheetInteractionState(){
+  document.querySelectorAll('.media-drag-ghost').forEach(x=>x.remove());
+  document.querySelectorAll('.image-media-row').forEach(x=>x.classList.remove('media-drag-source','media-drop-before','media-drop-after'));
+  document.body.classList.remove('reordering-media');
+}
+function closeSheetSafely(){
+  cleanupSheetInteractionState();
+  sheet.close();
+}
+function setSheetCloseAction(handler=closeSheetSafely){
+  const close=$('#sheetClose');
+  if(close)close.onclick=handler;
+}
+
 function openSheet(html){
   const titleEl=$('#sheetTitle');
   const footer=$('#sheetFooter');
   body.innerHTML=html;
   footer.innerHTML='';
+  // Every screen starts with a fresh, working ×. Multi-step screens may
+  // deliberately override it below to mirror Back, Cancel, or Done.
+  setSheetCloseAction(closeSheetSafely);
 
   // Titles belong in the fixed sheet header.
   const titleRow=body.querySelector('.sheet-title-row');
@@ -1852,18 +1959,13 @@ function openSheet(html){
     done.className='primary';
     done.id='sheetDefaultDone';
     done.textContent='Done';
-    done.onclick=()=>sheet.close();
+    done.onclick=closeSheetSafely;
     footer.appendChild(done);
   }
 
   sheet.showModal();
 }
-$('#sheetClose').onclick=()=>{
-  document.querySelectorAll('.media-drag-ghost').forEach(x=>x.remove());
-  document.querySelectorAll('.image-media-row').forEach(x=>x.classList.remove('media-drag-source','media-drop-before','media-drop-after'));
-  document.body.classList.remove('reordering-media');
-  sheet.close();
-};
+setSheetCloseAction(closeSheetSafely);
 
 
 const FLOAT_ADD_KEY='openlp-service-planner-add-position-v2';
@@ -2043,16 +2145,13 @@ $('#openLPViewBtn').onclick=()=>{
   render();
 };
 $('#plannerSyncChurchSuiteBtn').onclick=()=>{
+  if(!churchSuiteEnabled())return;
   const s=currentService();
   if(!s || !(s.churchSuitePlanId||s.churchSuitePlanUrl))return;
   openChurchSuiteImportModeChoice({
     title:`Sync ${s.title}`,
     onBack:()=>sheet.close(),
-    onConfirm:importMode=>openChurchSuiteServiceScan(actualChurchSuitePlanUrl(s),s.id,{
-      theme:s.theme,
-      planId:s.churchSuitePlanId||null,
-      importMode
-    })
+    onConfirm:(importMode,templateId='')=>openChurchSuiteServiceScan(actualChurchSuitePlanUrl(s),s.id,{theme:s.theme,planId:s.churchSuitePlanId||null,importMode,templateId:templateId||defaultTemplateIdForService(s)})
   });
 };
 
@@ -4406,16 +4505,17 @@ function editItem(id){
       </div>
       <div class="service-song-library-actions">
         <button class="secondary" id="viewLyrics">View / edit song lyrics</button>
-        ${x.churchSuiteSourceId?`<button class="secondary" id="replaceImportedSong">Replace song</button>`:''}
+        ${churchSuiteEnabled()&&x.churchSuiteSourceId?`<button class="secondary" id="replaceImportedSong">Replace song</button>`:''}
       </div>`:''}
+    ${churchSuiteEnabled()&&x.type==='song'&&x.extraChurchSuiteSong?`<div class="warning-card"><strong>Extra ChurchSuite song</strong><p>${esc(x.churchSuiteTemplateNote||'This ChurchSuite song was appended because the selected template had no remaining Song slot.')}</p></div>`:''}
     ${x.type==='song'&&serviceOnlySong?`
       <div class="service-song-classification-summary">
         <div><strong>Service-only song</strong><span>Complete local copy stored in this service · not in shared Song Library</span></div>
-        ${x.churchSuiteSourceId?`<button class="secondary compact" id="replaceImportedSong">Replace song</button>`:''}
+        ${churchSuiteEnabled()&&x.churchSuiteSourceId?`<button class="secondary compact" id="replaceImportedSong">Replace song</button>`:''}
       </div>
     `:''}
     ${x.type==='song'&&!librarySong&&!serviceOnlySong?`
-      <div class="warning-card"><strong>ChurchSuite song slot is not matched to a local song.</strong><p>Keep this slot in the service order, choose a near match from the library, or create the missing song in the shared library and use it for this service.</p></div>
+      <div class="warning-card"><strong>${x.templateSongPlaceholder?(churchSuiteEnabled()?'Song not yet assigned in ChurchSuite':'Empty Song position'):(churchSuiteEnabled()?'ChurchSuite song slot is not matched to a local song.':'Song is not matched to the shared library.')}</strong><p>${x.templateSongPlaceholder?(churchSuiteEnabled()?'This template Song position is being kept in the service until ChurchSuite supplies a song. You can also choose a song locally if needed.':'This template contains an empty Song position. Choose a song from the library or leave the position empty.'):'Keep this position in the service order, choose a near match from the library, or create the missing song in the shared library and use it for this service.'}</p></div>
       <div class="service-song-unmatched-actions">
         <button class="secondary" id="chooseImportedSong">Choose song from library</button>
         <button class="primary" id="createImportedSong">Add new song</button>
@@ -4473,6 +4573,7 @@ function editItem(id){
       ${x.churchSuiteSourceId?`<label class="toggle"><span>Ignore Bible projection for this service</span><input id="editBibleIgnore" type="checkbox" ${x.ignoreBible?'checked':''}></label>
       <p class="meta">Keep the ChurchSuite Bible-reading item on the run sheet without requiring a projected Bible item.</p>`:''}
     `:''}
+    ${churchSuiteEnabled()&&x.churchSuiteSourceId?`<label class="toggle churchsuite-retain-toggle"><span><strong>Keep local changes after ChurchSuite sync</strong><small>Recommended. Future ChurchSuite syncs keep this edited Planner item instead of replacing it.</small></span><input id="editRetainChurchSuite" type="checkbox" ${x.retainOnChurchSuiteSync!==false?'checked':''}></label>`:''}
     <div class="field"><label>Run-sheet notes</label><textarea id="editNotes">${esc(x.notes||'')}</textarea></div>
     <div class="field"><label>Last changed</label><div>${esc(x.changed)} by ${esc(x.by)}</div></div>
     <div class="sheet-actions"><button class="secondary" id="saveItemStay" disabled>Save changes</button><button class="primary" id="saveItem">Done</button><button class="danger" id="deleteItem">Delete</button></div>`);
@@ -4594,24 +4695,49 @@ function editItem(id){
 
   const editInputs=[...body.querySelectorAll('input, textarea, select')].filter(el=>el.id!=='saveItem');
   let editDirty=false;
+  const closeItemEditor=()=>{
+    document.querySelectorAll('.media-drag-ghost').forEach(el=>el.remove());
+    document.querySelectorAll('.image-media-row').forEach(el=>el.classList.remove('media-drag-source','media-drop-before','media-drop-after'));
+    document.body.classList.remove('reordering-media');
+    sheet.close();
+    render();
+  };
+  let exitWithoutSavingArmed=false;
+  let exitWithoutSavingTimer=null;
+  const resetDoneButton=()=>{
+    exitWithoutSavingArmed=false;
+    clearTimeout(exitWithoutSavingTimer);
+    const done=$('#saveItem');
+    if(done){done.textContent='Done';done.classList.remove('exit-unsaved-armed');}
+    const top=$('#saveItemTop');
+    if(top){top.textContent='Done';top.classList.remove('exit-unsaved-armed');}
+  };
   const markDirty=()=>{
     editDirty=true;
+    resetDoneButton();
     const stay=$('#saveItemStay');
     if(stay){
       stay.textContent='Save changes';
       stay.disabled=false;
+      stay.classList.remove('secondary');
+      stay.classList.add('primary');
     }
-    // Done remains visually and semantically "Done": if changes exist it saves
-    // them and closes, but it does not become a second Save Changes button.
-    const done=$('#saveItem');
-    if(done){
-      done.textContent='Done';
-      done.disabled=false;
+  };
+  const requestDone=()=>{
+    if(!editDirty){closeItemEditor();return;}
+    if(exitWithoutSavingArmed){
+      clearTimeout(exitWithoutSavingTimer);
+      closeItemEditor();
+      return;
     }
-    if($('#saveItemTop')){
-      $('#saveItemTop').textContent='Done';
-      $('#saveItemTop').disabled=false;
-    }
+    exitWithoutSavingArmed=true;
+    const arm=btn=>{
+      if(!btn)return;
+      btn.textContent='Exit without saving?';
+      btn.classList.add('exit-unsaved-armed');
+    };
+    arm($('#saveItem'));arm($('#saveItemTop'));
+    exitWithoutSavingTimer=setTimeout(resetDoneButton,2600);
   };
   editInputs.forEach(el=>{
     el.addEventListener('input',markDirty);
@@ -4718,10 +4844,11 @@ function editItem(id){
 
   const saveItemChanges=async(stayOpen=false)=>{
     if(!editDirty){
-      if(!stayOpen)sheet.close();
+      if(!stayOpen)closeItemEditor();
       return;
     }
     x.title=$('#editTitle').value; x.person=$('#editPerson').value; x.notes=$('#editNotes').value;
+    if(churchSuiteEnabled()&&x.churchSuiteSourceId&&$('#editRetainChurchSuite')) x.retainOnChurchSuiteSync=!!$('#editRetainChurchSuite').checked;
     if(x.type==='song'){
       x.verse=$('#editVerse').value.trim();
       x.musicNote=$('#editMusicNote').value.trim();
@@ -4892,12 +5019,14 @@ function editItem(id){
     await saveServiceItem(x);
     markServiceEdited('edited item');
     appendAudit('edited item',x.title);
-    if(stayOpen)editItem(id);else sheet.close();
-    render();
+    if(stayOpen)editItem(id);else closeItemEditor();
+    if(stayOpen)render();
   };
-  $('#saveItem').onclick=()=>saveItemChanges(false);
+  $('#saveItem').onclick=requestDone;
   $('#saveItemStay').onclick=()=>saveItemChanges(true);
-  if($('#saveItemTop'))$('#saveItemTop').onclick=()=>saveItemChanges(false);
+  if($('#saveItemTop'))$('#saveItemTop').onclick=requestDone;
+  const itemEditorClose=$('#sheetClose');
+  if(itemEditorClose)itemEditorClose.onclick=requestDone;
   $('#deleteItem').onclick=()=>{
     const service=currentService();
     const itemLabel=x.type==='bible'
@@ -4942,6 +5071,8 @@ function editItem(id){
 
 $('#serviceTitle').onclick=()=>openServiceSwitcher();
 $('#serviceTitle').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openServiceSwitcher();}};
+if($('#currentServiceTemplateBtn'))$('#currentServiceTemplateBtn').onclick=()=>openServiceTemplateOverride(currentService());
+if($('#saveCurrentServiceTemplateBtn'))$('#saveCurrentServiceTemplateBtn').onclick=()=>saveServiceAsTemplate(currentService());
 $('#settingsBtn').onclick=()=>openSettings();
 $('#servicesLibraryBtn').onclick=()=>openLibraryHub();
 $('.avatar').onclick=()=>openProfile();
@@ -5027,8 +5158,11 @@ function actualChurchSuitePlanUrl(service){
   return '';
 }
 
-function churchSuiteEnabled(){ return ['manual','auto'].includes(state.settings?.churchSuiteMode); }
-function churchSuiteAutoEnabled(){ return state.settings?.churchSuiteMode==='auto'; }
+function churchSuiteEnabled(){ return ['on','manual','auto'].includes(state.settings?.churchSuiteMode); }
+function churchSuiteAutoEnabled(){ return churchSuiteEnabled(); }
+if(state.settings?.churchSuiteMode==='manual'||state.settings?.churchSuiteMode==='auto'){
+  state.settings.churchSuiteMode='on';
+}
 function serviceProjectionLabel(s){ const p=serviceProjectionReadiness(s); return p.total?`${p.ready}/${p.total} ready`:'No projection'; }
 function serviceProjectorCopyLabel(s){ const p=projectorState(s); return p==='downloaded'?'Current':p==='stale'?'Outdated':'Not downloaded'; }
 
@@ -5062,6 +5196,13 @@ function serviceProgressState(service){
 function serviceProgressBadge(service){
   const state=serviceProgressState(service);
   return `<span class="service-progress service-progress-${state.key}">${esc(state.label)}</span>`;
+}
+function serviceItemDetailForDisplay(item){
+  if(!item)return '';
+  if(!churchSuiteEnabled()&&item.type==='song'&&item.templateSongPlaceholder){
+    return 'Empty Song position';
+  }
+  return String(item.detail||'');
 }
 
 function formatChurchSuiteUpdated(v){ return v?formatLastEdited(v):'Not yet'; }
@@ -5126,7 +5267,7 @@ function renderServicesPage(){
 
   const publishedPlansBtn=$('#servicesPublishedPlansBtn');
   if(publishedPlansBtn){
-    const directoryEnabled=!!state.settings?.churchSuiteDirectoryEnabled;
+    const directoryEnabled=churchSuiteEnabled()&&!!state.settings?.churchSuiteDirectoryEnabled;
     const showDirectoryLink=directoryEnabled && !!state.settings?.churchSuiteDirectoryShowServicesLink;
     const directoryPath=String(state.settings?.churchSuiteDirectoryPath||'churchsuite-plans')
       .trim().replace(/^\/+|\/+$/g,'').replace(/\s+/g,'-');
@@ -5155,14 +5296,14 @@ function renderServicesPage(){
             :`<button class="text-action" data-edit-cs="${esc(s.id)}">Add link</button>`
       ):''}</td>
       <td data-cs-column>${churchSuiteEnabled()?esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated)):''}</td>
-      <td><div class="service-row-actions"><button class="secondary compact service-edit-btn" data-open-service="${esc(s.id)}">Open</button><button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button></div></td>
+      <td><div class="service-row-actions"><button class="secondary compact service-edit-btn" data-open-service="${esc(s.id)}">Open</button><button class="secondary compact" data-save-template="${esc(s.id)}">Save template</button><button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button></div></td>
     </tr>`).join('');
   $('#servicesMobileList').innerHTML=services.map(s=>`
     <article class="service-mobile-card" data-service-row="${esc(s.id)}">
       <div class="service-mobile-head">
         <input class="service-mobile-select" type="checkbox" data-select-service="${esc(s.id)}" ${selectedServiceIds.has(String(s.id))?'checked':''} aria-label="Select ${esc(s.title)}">
         <button class="services-open-service" data-open-service="${esc(s.id)}"><strong>${esc(s.title)}</strong><small>${esc(s.date||'')}</small></button>
-        <div class="service-row-actions"><button class="secondary compact service-edit-btn" data-open-service="${esc(s.id)}">Open</button><button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button></div>
+        <div class="service-row-actions"><button class="secondary compact service-edit-btn" data-open-service="${esc(s.id)}">Open</button><button class="secondary compact" data-save-template="${esc(s.id)}">Save template</button><button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button></div>
       </div>
       <div class="service-mobile-grid">
         <span><small>Progress</small>${serviceProgressBadge(s)}</span>
@@ -5197,6 +5338,7 @@ function renderServicesPage(){
     closeServicesPage();
     render();
   });
+  $('#servicesPage').querySelectorAll('[data-save-template]').forEach(b=>b.onclick=()=>{const svc=state.services.find(x=>String(x.id)===String(b.dataset.saveTemplate));if(svc)saveServiceAsTemplate(svc)});
   $('#servicesPage').querySelectorAll('[data-edit-cs]').forEach(b=>b.onclick=()=>openChurchSuiteLinkDialog(b.dataset.editCs));
   $('#servicesPage').querySelectorAll('[data-sync-cs]').forEach(b=>b.onclick=()=>{
     const s=state.services.find(x=>String(x.id)===String(b.dataset.syncCs));
@@ -5204,17 +5346,13 @@ function renderServicesPage(){
     openChurchSuiteImportModeChoice({
       title:`Sync ${s.title}`,
       onBack:()=>renderServicesPage(),
-      onConfirm:importMode=>openChurchSuiteServiceScan(s.churchSuitePlanUrl||'',s.id,{
-        theme:s.theme,
-        planId:s.churchSuitePlanId||null,
-        importMode
-      })
+      onConfirm:(importMode,templateId='')=>openChurchSuiteServiceScan(s.churchSuitePlanUrl||'',s.id,{theme:s.theme,planId:s.churchSuitePlanId||null,importMode,templateId:templateId||defaultTemplateIdForService(s)})
     });
   });
   $('#servicesPage').querySelectorAll('[data-page-delete]').forEach(b=>{let armed=false,timer=null;b.onclick=()=>{const s=state.services.find(x=>String(x.id)===String(b.dataset.pageDelete));if(!s)return;if(!armed){armed=true;b.classList.add('armed','delete-x-confirm');b.textContent='×';b.title='Click again to confirm delete';b.setAttribute('aria-label','Confirm delete');timer=setTimeout(()=>{armed=false;b.classList.remove('armed','delete-x-confirm');b.innerHTML='<svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg>';b.title='Delete service';b.setAttribute('aria-label','Delete service')},3000);return}clearTimeout(timer);confirmDeleteServiceFromPage(s)}})
 }
 function confirmDeleteServiceFromPage(s){
-  const linked=hasChurchSuitePlanReference(s);
+  const linked=churchSuiteEnabled()&&hasChurchSuitePlanReference(s);
   openSheet(`<h2>Delete service?</h2>
     <div class="warning-card">
       <strong>${esc(s.title)} · ${esc(s.date||'')}</strong>
@@ -5254,7 +5392,7 @@ function confirmDeleteSelectedServices(){
   const services=ids.map(id=>state.services.find(s=>String(s.id)===String(id))).filter(Boolean);
   if(!services.length)return;
 
-  const linkedCount=services.filter(hasChurchSuitePlanReference).length;
+  const linkedCount=churchSuiteEnabled()?services.filter(hasChurchSuitePlanReference).length:0;
   openSheet(`<h2>Delete ${services.length} services?</h2>
     <div class="warning-card">
       <strong>${services.length} service plan${services.length===1?'':'s'} selected</strong>
@@ -5336,7 +5474,7 @@ function openChurchSuiteLinkDialog(id){
 function openAddServiceFromServicesPage(){
   const mode=state.settings.churchSuiteMode||'off';
   const csEnabled=mode==='manual'||mode==='auto';
-  const themes=[...new Set(['Default','KSSS (am) white','KSSS (am)',...(state.settings.customThemes||[])])];
+  const themes=plannerThemeNames();
   const defaultTheme=state.settings.defaultMorningTheme||'Default';
 
   openSheet(`<h2>Add service</h2>
@@ -5350,6 +5488,7 @@ function openAddServiceFromServicesPage(){
       <div class="field">
         <label>ChurchSuite import</label>
         <select id="newChurchSuiteImportMode">
+          ${serviceTemplates().length?`<option value="template" selected>Use a Template</option>`:''}
           <option value="songs">Songs only</option>
           <option value="all">All configured Types</option>
           <option value="select">Select Types for this import</option>
@@ -5383,7 +5522,8 @@ function openAddServiceFromServicesPage(){
   const manualFields=$('#manualServiceFields');
   const confirmBtn=$('#confirmServiceAdd');
   if($('#newChurchSuiteImportMode')){
-    $('#newChurchSuiteImportMode').value=state.settings.churchSuiteDefaultImportMode||'all';
+    const preferred=serviceTemplates().length?'template':(state.settings.churchSuiteDefaultImportMode||'all');
+    if([...$('#newChurchSuiteImportMode').options].some(o=>o.value===preferred))$('#newChurchSuiteImportMode').value=preferred;
   }
 
   const syncAddMode=()=>{
@@ -5612,26 +5752,774 @@ function churchSuiteScanItemPreview(scanItems){
 
 
 
-function openChurchSuiteImportModeChoice({title='ChurchSuite import',onConfirm,onBack=null}){
+
+function templateItemKind(item){
+  return item?.templateMode==='keep'?'keep':'sync';
+}
+function templateKeptItemMatchesLocal(slot,item){
+  if(!slot||!item||item.churchSuiteSourceId)return false;
+  if(slot.templateSourceItemId && String(slot.templateSourceItemId)===String(item.id))return true;
+  if(String(slot.type||'')!==String(item.type||''))return false;
+  const norm=value=>String(value||'').trim().toLowerCase().replace(/\s+/g,' ');
+  const slotTitle=norm(slot.title);
+  const itemTitle=norm(item.title);
+  return !!slotTitle && slotTitle===itemTitle;
+}
+function templateManagedLocalIds(template,items){
+  const used=new Set();
+  const ids=new Set();
+  const locals=(items||[]).filter(item=>!item.churchSuiteSourceId);
+  for(const slot of template?.items||[]){
+    if(templateItemKind(slot)!=='keep')continue;
+    const exact=slot.templateSourceItemId
+      ?locals.find(item=>!used.has(String(item.id))&&String(item.id)===String(slot.templateSourceItemId))
+      :null;
+    const match=exact||locals.find(item=>!used.has(String(item.id))&&templateKeptItemMatchesLocal(slot,item));
+    if(match){used.add(String(match.id));ids.add(String(match.id));}
+  }
+  return ids;
+}
+function templateItemSummary(item){
+  if(!churchSuiteEnabled()){
+    if(isTemplateSongSlot(item))return `Song position`;
+    return `Keep ${item.title||item.type||'item'} in template`;
+  }
+  if(templateItemKind(item)==='sync')return `Sync ${item.churchSuiteType||item.type||'item'} from ChurchSuite`;
+  return `Keep ${item.title||item.type||'local item'} from template`;
+}
+function preserveLocalAttachments(previous,nextItem){
+  if(!previous||!nextItem)return nextItem;
+  if(Array.isArray(previous.media)&&previous.media.length){
+    nextItem.media=structuredClone(previous.media);
+    nextItem.projected=previous.projected!==false;
+    nextItem.ready=previous.ready!==false;
+    if(previous.autoplay!==undefined)nextItem.autoplay=previous.autoplay;
+    if(previous.interval!==undefined)nextItem.interval=previous.interval;
+    if(previous.autoStart!==undefined)nextItem.autoStart=previous.autoStart;
+    if(previous.ignoreImages!==undefined)nextItem.ignoreImages=previous.ignoreImages;
+    if(previous.ignoreVideo!==undefined)nextItem.ignoreVideo=previous.ignoreVideo;
+    if(previous.ignoreBible!==undefined)nextItem.ignoreBible=previous.ignoreBible;
+    updateMediaItemDetail(nextItem);
+  }
+  return nextItem;
+}
+async function makeTemplateMediaDurable(item){
+  const copy=structuredClone(item);
+  if(!remoteAvailable || !Array.isArray(copy.media) || !copy.media.length)return copy;
+  const mediaType=mediaStorageType(copy.type);
+  const durable=[];
+  for(const asset of copy.media){
+    let libraryId=asset.sourceLibraryId||asset.id;
+    if(!asset.sourceLibraryId){
+      const result=await retainServiceMedia(asset.id,mediaType);
+      libraryId=result.libraryAssetId;
+    }
+    durable.push({id:String(libraryId),originalName:asset.originalName||'',contentType:asset.contentType||'',byteSize:asset.byteSize||0,templateLibraryAsset:true});
+  }
+  copy.media=durable;
+  try{
+    const library=await loadPlannerMediaLibrary(mediaType);
+    const byId=new Map((library.retained||[]).map(a=>[String(a.id),a]));
+    const sourceRows=durable.map(a=>byId.get(String(a.id))).filter(Boolean);
+    const folderIds=[...new Set(sourceRows.map(a=>String(a.libraryFolderId||'')).filter(Boolean))];
+    if(sourceRows.length===durable.length && folderIds.length===1){
+      copy.templateLibraryFolderId=folderIds[0];
+      copy.templateLibraryFolderName=String(sourceRows[0]?.libraryFolderName||'');
+      copy.templateUseCurrentFolderContents=true;
+    }
+  }catch(_){ }
+  return copy;
+}
+async function saveServiceAsTemplate(service){
+  if(!service)return;
+  const csTemplates=churchSuiteEnabled();
+  openSheet(`<h2>Save service as template</h2>
+    <p class="meta">${csTemplates
+      ?'Choose which positions are refreshed from ChurchSuite and which local items stay in the template.'
+      :'Save this service order, theme and local items as a reusable template.'} If a kept media item currently comes entirely from one Planner library folder, the template will remember that folder and use its current contents.</p>
+    <div class="field"><label>Template name</label><input id="templateName" value="${esc(service.serviceTypeName||service.title||'Service template')}"></div>
+    <div class="field"><label>OpenLP theme</label><select id="templateTheme">${plannerThemeNames().map(theme=>`<option value="${esc(theme)}" ${String(service.theme||'Default')===String(theme)?'selected':''}>${esc(theme)}</option>`).join('')}</select><p class="meta">Services created or re-synced with this template use this OpenLP theme.</p></div>
+    <div class="template-item-list">${(service.items||[]).map((item,index)=>{
+      const defaultKeep=!item.churchSuiteSourceId || item.retainOnChurchSuiteSync || item.type==='sermon-images';
+      return `<div class="template-item-row"><span class="template-position">${index+1}</span><div><strong>${esc(item.title)}</strong><small>${esc(csTemplates?(item.churchSuiteType||item.type||'item'):(item.type||'item'))}</small></div>${item.type==='song'?`<select data-template-item-mode="${esc(String(item.id))}" disabled><option value="sync" selected>${csTemplates?'Song position · next ChurchSuite song':'Song position'}</option></select>`:(csTemplates?`<select data-template-item-mode="${esc(String(item.id))}"><option value="sync" ${defaultKeep?'':'selected'}>Sync from ChurchSuite</option><option value="keep" ${defaultKeep?'selected':''}>Keep in template</option></select>`:`<select data-template-item-mode="${esc(String(item.id))}" disabled><option value="keep" selected>Keep in template</option></select>`)}</div>`;
+    }).join('')}</div>
+    <label class="toggle"><span>Make this the default template for ${esc(service.serviceTypeName||service.title||'this service type')}</span><input id="templateMakeDefault" type="checkbox" ${service.serviceTypeId?'checked':'disabled'}></label>
+    <div class="sheet-actions"><button class="secondary" id="cancelTemplateSave">Cancel</button><button class="primary" id="confirmTemplateSave">Save template</button></div>`);
+  const cancelTemplateSave=()=>closeSheetSafely();
+  $('#cancelTemplateSave').onclick=cancelTemplateSave;
+  setSheetCloseAction(cancelTemplateSave);
+  $('#confirmTemplateSave').onclick=async()=>{
+    const name=$('#templateName').value.trim(); if(!name){await appAlert('Give the template a name.');return;}
+    const btn=$('#confirmTemplateSave'); btn.disabled=true;btn.textContent='Saving template…';
+    try{
+      const templateItems=[];
+      for(const item of service.items||[]){
+        const selectedMode=body.querySelector(`[data-template-item-mode="${CSS.escape(String(item.id))}"]`)?.value||(csTemplates?'sync':'keep');
+        const mode=item.type==='song'?'sync':(csTemplates?selectedMode:'keep');
+        if(mode==='sync'){
+          templateItems.push({
+            templateMode:'sync',
+            churchSuiteType:item.type==='song'?'Song':(item.churchSuiteType||null),
+            type:item.type,
+            sourcePosition:(service.items||[]).indexOf(item),
+            title:item.type==='song'?(item.title||'Song'):(item.title||'')
+          });
+        }else{
+          const durable=await makeTemplateMediaDurable(item);
+          durable.templateMode='keep';
+          durable.templateSourceItemId=String(item.id);
+          durable.templateProtected=true;
+          durable.retainOnChurchSuiteSync=true;
+          delete durable.churchSuiteSourceId;
+          delete durable.churchSuiteExcludedFromLastSync;
+          templateItems.push(durable);
+        }
+      }
+      const id=`tpl-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+      const template={id,name,serviceTypeId:service.serviceTypeId||null,serviceTypeName:service.serviceTypeName||service.title||'',theme:$('#templateTheme')?.value||service.theme||'Default',items:templateItems,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+      state.settings.serviceTemplates=[...serviceTemplates(),template];
+      if(service.serviceTypeId && $('#templateMakeDefault')?.checked)state.settings.defaultTemplateByServiceType[String(service.serviceTypeId)]=id;
+      persistPlanner();
+      if(remoteAvailable)await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
+      sheet.close();
+      await appAlert(`Template “${name}” saved.`,{title:'Template saved'});
+    }catch(err){btn.disabled=false;btn.textContent='Save template';appAlert(err?.message||String(err));}
+  };
+}
+function openTemplateChooser({onChoose,onBack=null,preferredId=''}={}){
+  const templates=serviceTemplates();
+  if(!templates.length){appAlert('No service templates have been saved yet.');return;}
+  const sorted=[...templates].sort((a,b)=>(String(a.id)===String(preferredId)?-1:String(b.id)===String(preferredId)?1:String(a.name).localeCompare(String(b.name))));
+  openSheet(`<h2>Use a Template</h2><p class="meta">Choose the service pattern to apply to this ChurchSuite plan.</p><div class="template-choice-list">${sorted.map(t=>`<button class="choice ${String(t.id)===String(preferredId)?'template-default-choice':''}" data-use-template="${esc(t.id)}"><strong>${esc(t.name)}</strong><span>${t.items?.length||0} positions${String(t.id)===String(preferredId)?' · default for this service type':''}</span></button>`).join('')}</div><div class="sheet-actions"><button class="secondary" id="templateChoiceBack">Back</button></div>`);
+  let choosing=false;
+  const leaveTemplateChooser=()=>{
+    if(choosing)return;
+    cancelChurchSuiteOperation();
+    onBack?onBack():closeSheetSafely();
+  };
+  $('#templateChoiceBack').onclick=leaveTemplateChooser;
+  setSheetCloseAction(leaveTemplateChooser);
+  body.querySelectorAll('[data-use-template]').forEach(btn=>btn.onclick=()=>{
+    if(choosing)return;
+    const t=serviceTemplateById(btn.dataset.useTemplate);
+    if(!t)return;
+    choosing=true;
+    body.querySelectorAll('[data-use-template]').forEach(other=>other.disabled=true);
+    $('#templateChoiceBack').disabled=true;
+    btn.classList.add('choice-working');
+    const strong=btn.querySelector('strong');
+    if(strong)strong.textContent=`✓ ${strong.textContent.replace(/^✓\s*/,'')}`;
+    setTimeout(()=>onChoose(t),30);
+  });
+}
+function churchSuiteTemplateSlotMatches(templateItem,incoming){
+  if(templateItem.churchSuiteType && incoming.churchSuiteType)return String(templateItem.churchSuiteType).toLowerCase()===String(incoming.churchSuiteType).toLowerCase();
+  return String(templateItem.type||'')===String(incoming.type||'');
+}
+function isTemplateSongSlot(slot){
+  if(!slot)return false;
+  if(String(slot.type||'').toLowerCase()==='song')return true;
+  if(String(slot.churchSuiteType||'').trim().toLowerCase()==='song')return true;
+  const title=String(slot.title||'').trim().toLowerCase();
+  return title==='song' || /^song\s*\d*$/.test(title);
+}
+function templateServiceRole(value){
+  return String(value||'').trim().toLowerCase()
+    .replace(/\b(images?|slides?|presentation|projection|local|item)\b/g,' ')
+    .replace(/[^a-z0-9]+/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function templateKeptSlotMatchesIncoming(slot,incoming){
+  const slotType=templateServiceRole(slot.churchSuiteType);
+  const incomingType=templateServiceRole(incoming.churchSuiteType);
+  if(slotType&&incomingType&&slotType===incomingType)return true;
+
+  const slotTitle=templateServiceRole(slot.title);
+  const incomingTitle=templateServiceRole(incoming.title);
+  if(slotTitle&&incomingTitle&&slotTitle===incomingTitle)return true;
+  if(slotTitle&&incomingType&&slotTitle===incomingType)return true;
+  if(slotType&&incomingTitle&&slotType===incomingTitle)return true;
+
+  // Common local presentation names such as "Sermon Images" intentionally
+  // replace the ChurchSuite "Sermon" slot rather than adding a second sermon.
+  if(slotTitle&&incomingTitle&&(slotTitle.includes(incomingTitle)||incomingTitle.includes(slotTitle)))return true;
+  return false;
+}
+async function applyTemplateToMappedItems(template,mapped,serviceId,existingItems=[]){
+  if(!template)return mapped;
+  const pool=[...(mapped||[])];
+  const out=[];
+
+  for(let index=0;index<(template.items||[]).length;index++){
+    const slot=template.items[index];
+
+    // A Song position is always a positional ChurchSuite Song slot. Older
+    // templates may have saved blank Song items as "keep" simply because no
+    // ChurchSuite song/source existed when the template was created.
+    if(isTemplateSongSlot(slot)){
+      const at=pool.findIndex(x=>String(x.type||'').toLowerCase()==='song');
+      if(at>=0){
+        const incoming=pool.splice(at,1)[0];
+        incoming.templateSongSlot=true;
+        incoming.templateSongSlotIndex=index;
+        incoming.templateId=template.id;
+        incoming.templateProtected=false;
+        incoming.templateSongPlaceholder=false;
+        incoming.extraChurchSuiteSong=false;
+        out.push(incoming);
+      }else{
+        // If this service already has a locally chosen song in this same
+        // template position, keep it until ChurchSuite supplies a replacement.
+        const previousSong=(existingItems||[]).find(old=>
+          old?.type==='song' &&
+          Number(old.templateSongSlotIndex)===index &&
+          (
+            String(old.templateId||'')===String(template.id||'') ||
+            old.templateSongPlaceholder ||
+            old.templateSongSlot
+          )
+        );
+
+        if(previousSong && (previousSong.songId||previousSong.serviceSong)){
+          out.push({
+            ...structuredClone(previousSong),
+            templateSongSlot:true,
+            templateSongSlotIndex:index,
+            templateId:template.id,
+            templateProtected:true,
+            retainOnChurchSuiteSync:true,
+            templateSongPlaceholder:false,
+            churchSuiteSourceId:null,
+            churchSuiteTemplateNote:'Local song retained in template Song slot until ChurchSuite assigns a song.'
+          });
+        }else{
+          out.push({
+            id:`tpl-song-${Date.now()}-${index}-${Math.random().toString(36).slice(2,6)}`,
+            type:'song',
+            songId:null,
+            title:String(slot.title||'Song').trim()||'Song',
+            person:'Music',
+            projected:true,
+            ready:false,
+            detail:'Not yet assigned in ChurchSuite',
+            verse:'',
+            musicNote:'',
+            by:currentEditor(),
+            changed:'just now',
+            templateSongSlot:true,
+            templateSongSlotIndex:index,
+            templateSongPlaceholder:true,
+            templateProtected:true,
+            templateId:template.id,
+            retainOnChurchSuiteSync:true,
+            churchSuiteType:'Song',
+            churchSuiteTemplateNote:'Song slot retained from template — no ChurchSuite song is assigned yet.'
+          });
+        }
+      }
+      continue;
+    }
+
+    if(templateItemKind(slot)==='sync'){
+      const at=pool.findIndex(x=>churchSuiteTemplateSlotMatches(slot,x));
+      if(at>=0)out.push(pool.splice(at,1)[0]);
+      continue;
+    }
+
+    const replaceAt=pool.findIndex(x=>templateKeptSlotMatchesIncoming(slot,x));
+    if(replaceAt>=0)pool.splice(replaceAt,1);
+
+    const item=structuredClone(slot);
+    item.id=`tplitem-${Date.now()}-${index}-${Math.random().toString(36).slice(2,6)}`;
+    item.templateProtected=true;
+    item.templateId=template.id;
+    item.retainOnChurchSuiteSync=true;
+    item.changed='just now';
+    item.by=currentEditor();
+
+    const previousTemplateItem=(existingItems||[]).find(old=>
+      old?.templateProtected &&
+      String(old.templateId||'')===String(template.id||'') &&
+      (String(old.templateSourceItemId||'')===String(slot.templateSourceItemId||'') || templateKeptItemMatchesLocal(slot,old))
+    );
+    if(previousTemplateItem)preserveLocalAttachments(previousTemplateItem,item);
+
+    if(remoteAvailable && !(Array.isArray(item.media)&&item.media.length&&previousTemplateItem)){
+      let ids=[];
+      if(item.templateUseCurrentFolderContents&&item.templateLibraryFolderId){
+        const library=await loadPlannerMediaLibrary(mediaStorageType(item.type));
+        ids=(library.retained||[])
+          .filter(a=>String(a.libraryFolderId||'')===String(item.templateLibraryFolderId))
+          .map(a=>String(a.id));
+      }else if(Array.isArray(item.media)&&item.media.length){
+        ids=item.media.map(a=>String(a.id)).filter(Boolean);
+      }
+      if(ids.length){
+        const result=await usePlannerLibraryAssets(ids,serviceId,item.id);
+        item.media=result.assets||[];
+        updateMediaItemDetail(item);
+      }else if(['images','sermon-images','video','pdf'].includes(item.type)){
+        item.media=[];
+        updateMediaItemDetail(item);
+      }
+    }
+    out.push(item);
+  }
+
+  const extraSongs=pool
+    .filter(item=>String(item.type||'').toLowerCase()==='song')
+    .map((item,index)=>({
+      ...item,
+      extraChurchSuiteSong:true,
+      extraChurchSuiteSongNumber:index+1,
+      churchSuiteTemplateNote:'Extra ChurchSuite song — no Song slot was available in the selected template.'
+    }));
+
+  return [...out,...extraSongs];
+}
+
+
+function openCreateServiceTemplateFromLibrary(){
+  const services=[...(state.services||[])].sort((a,b)=>String(a.dateISO||'').localeCompare(String(b.dateISO||''))||String(a.title||'').localeCompare(String(b.title||'')));
+  openSheet(`<h2>Create Service Template</h2>
+    <p class="meta">${churchSuiteEnabled()
+      ?'A useful template starts from a service, because that gives it real ChurchSuite positions, local sermon/notices items, media settings and service order.'
+      :'A useful template can start from an existing service so it inherits its order, local sermon/notices items, media settings and OpenLP theme.'}</p>
+    ${services.length?`<div class="template-create-service-list">
+      <strong>Create from an existing service</strong>
+      ${services.map(service=>`<button type="button" class="choice" data-template-from-service="${esc(service.id)}">
+        <strong>${esc(service.title)}</strong>
+        <span>${esc(service.date||service.dateISO||'')} · ${(service.items||[]).length} item${(service.items||[]).length===1?'':'s'}</span>
+      </button>`).join('')}
+    </div>`:`<div class="warning-card"><strong>No service is available to use yet.</strong><p>Create a service first, add the structure and local items you want, then use <strong>Save as template</strong>.</p></div>`}
+    <div class="template-create-new-service">
+      <strong>Or start with a new service</strong>
+      <p class="meta">Create and prepare the service, then use the <strong>Save as template</strong> button on that service.</p>
+      <button type="button" class="secondary" id="createServiceForTemplate">Create a service</button>
+    </div>
+    <div class="sheet-actions"><button class="primary" id="createTemplateBack">Back to Templates</button></div>`);
+
+  const leaveCreateTemplate=()=>openServiceTemplateManager('library');
+  $('#createTemplateBack').onclick=leaveCreateTemplate;
+  setSheetCloseAction(leaveCreateTemplate);
+  body.querySelectorAll('[data-template-from-service]').forEach(btn=>btn.onclick=()=>{
+    const service=state.services.find(s=>String(s.id)===String(btn.dataset.templateFromService));
+    if(service)saveServiceAsTemplate(service);
+  });
+  $('#createServiceForTemplate').onclick=()=>{
+    sheet.close();
+    openServicesPage();
+    openAddServiceFromServicesPage();
+  };
+}
+
+
+function normalizeTemplateForEditor(template){
+  const draft=structuredClone(template||{});
+  draft.name=String(draft.name||'Service template');
+  draft.theme=String(draft.theme||'Default');
+  draft.items=Array.isArray(draft.items)?draft.items.filter(Boolean):[];
+  draft.items=draft.items.map((item,index)=>{
+    const next={...item};
+    next.type=String(next.type||'text');
+    next.title=String(next.title||next.churchSuiteType||(
+      next.type==='song'?'Song':
+      next.type==='sermon-images'?'Sermon Images':
+      next.type==='images'?'Images':
+      next.type==='bible'?'Bible Reading':
+      next.type==='video'?'Video':
+      next.type==='pdf'?'PDF':'Service item'
+    ));
+    next.sourcePosition=Number.isFinite(Number(next.sourcePosition))?Number(next.sourcePosition):index;
+
+    // Songs are a first-class template position, not a generic ChurchSuite
+    // Type slot. Upgrade old song entries transparently when the editor opens.
+    if(next.type==='song'){
+      next.templateMode='sync';
+      next.churchSuiteType='Song';
+      next.title=next.title||'Song';
+      delete next.templateProtected;
+      delete next.retainOnChurchSuiteSync;
+    }else if(next.templateMode!=='sync'&&next.templateMode!=='keep'){
+      next.templateMode=next.churchSuiteSourceId?'sync':'keep';
+    }
+    return next;
+  });
+  return draft;
+}
+
+function openServiceTemplateManager(returnTo='library'){
+  const rows=serviceTemplates();
+  const defaults=state.settings.defaultTemplateByServiceType||{};
+  const defaultNamesByTemplate=new Map();
+  for(const type of regularServiceTypes()){
+    const templateId=String(defaults[String(type.id)]||'');
+    if(!templateId)continue;
+    if(!defaultNamesByTemplate.has(templateId))defaultNamesByTemplate.set(templateId,[]);
+    defaultNamesByTemplate.get(templateId).push(type.name);
+  }
+  const csTemplates=churchSuiteEnabled();
+  openSheet(`<h2>Service Templates</h2>
+    <p class="meta">${csTemplates
+      ?'Templates define service order and decide which positions sync from ChurchSuite and which stay local.'
+      :'Templates define reusable service order, OpenLP theme and local service items.'} Default assignment remains in Settings → Services; individual services can override their default from the service screen.</p>
+    ${returnTo==='library'?`<div class="template-library-create-bar"><div><strong>Create a template</strong><span>Start from an existing service, or create a service first.</span></div><button type="button" class="primary" id="createServiceTemplateBtn">＋ Create template</button></div>`:''}
+    <div class="template-manager-list">${rows.length?rows.map(t=>{
+      const defaultFor=defaultNamesByTemplate.get(String(t.id))||[];
+      return `<div class="template-manager-row">
+        <div><strong>${esc(t.name)}</strong><small>${t.items?.length||0} positions · Theme: ${esc(t.theme||'Default')} · ${esc(t.serviceTypeName||'Any service')}${defaultFor.length?` · Default for ${esc(defaultFor.join(', '))}`:''}</small></div>
+        <button class="secondary compact" data-template-edit="${esc(t.id)}">Edit</button>
+        <button class="secondary compact" data-template-rename="${esc(t.id)}">Rename</button>
+        <button class="danger compact" data-template-delete="${esc(t.id)}">Delete</button>
+      </div>`;
+    }).join(''):`<div class="template-empty-state"><strong>No templates have been saved.</strong><p>Create one from an existing service, or create and prepare a service first and then choose <strong>Save as template</strong>.</p>${returnTo==='library'?'<button type="button" class="primary" id="emptyCreateServiceTemplateBtn">Create template</button>':''}</div>`}</div>
+    <div class="sheet-actions"><button class="primary" id="templateManagerDone">Done</button></div>`);
+  const leaveTemplateManager=()=>returnTo==='settings'?openSettings():openLibraryHub();
+  $('#templateManagerDone').onclick=leaveTemplateManager;
+  setSheetCloseAction(leaveTemplateManager);
+  if($('#createServiceTemplateBtn'))$('#createServiceTemplateBtn').onclick=openCreateServiceTemplateFromLibrary;
+  if($('#emptyCreateServiceTemplateBtn'))$('#emptyCreateServiceTemplateBtn').onclick=openCreateServiceTemplateFromLibrary;
+  body.querySelectorAll('[data-template-edit]').forEach(btn=>btn.onclick=async()=>{
+    const t=serviceTemplateById(btn.dataset.templateEdit);
+    if(!t){await appAlert('That template could not be found.');return;}
+    try{
+      openServiceTemplateEditor(t.id,returnTo);
+    }catch(err){
+      console.error('Could not open Service Template editor.',err);
+      await appAlert(err?.message||String(err),{title:'Could not open template'});
+      openServiceTemplateManager(returnTo);
+    }
+  });
+  body.querySelectorAll('[data-template-rename]').forEach(btn=>btn.onclick=async()=>{
+    const t=serviceTemplateById(btn.dataset.templateRename);if(!t)return;
+    const name=await appPrompt('Template name',t.name,{title:'Rename template',confirmLabel:'Rename'});
+    if(!name?.trim())return;
+    t.name=name.trim();t.updatedAt=new Date().toISOString();
+    persistPlanner();
+    if(remoteAvailable)await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
+    openServiceTemplateManager(returnTo);
+  });
+  body.querySelectorAll('[data-template-delete]').forEach(btn=>btn.onclick=async()=>{
+    const t=serviceTemplateById(btn.dataset.templateDelete);if(!t)return;
+    const ok=await appConfirm(`Delete template “${t.name}”? Existing services are not changed.`,{title:'Delete service template',confirmLabel:'Delete template',danger:true});
+    if(!ok)return;
+    state.settings.serviceTemplates=serviceTemplates().filter(x=>String(x.id)!==String(t.id));
+    for(const [key,value] of Object.entries(state.settings.defaultTemplateByServiceType||{})){
+      if(String(value)===String(t.id))delete state.settings.defaultTemplateByServiceType[key];
+    }
+    for(const [key,value] of Object.entries(state.settings.serviceTemplateOverrideByServiceId||{})){
+      if(String(value)===String(t.id))delete state.settings.serviceTemplateOverrideByServiceId[key];
+    }
+    persistPlanner();
+    if(remoteAvailable)await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
+    openServiceTemplateManager(returnTo);
+  });
+}
+
+function openServiceTemplateEditor(templateId,returnTo='library'){
+  const original=serviceTemplateById(templateId);
+  if(!original){openServiceTemplateManager(returnTo);return;}
+  const draft=normalizeTemplateForEditor(original);
+  let dirty=false;
+
+  const renderEditor=()=>{
+    const csTemplates=churchSuiteEnabled();
+    openSheet(`<h2>Edit template · ${esc(draft.name)}</h2>
+      <p class="meta">${csTemplates
+        ?'Order here is the order used by <strong>Use a Template</strong>. Songs are separate ordered positions; non-song ChurchSuite items use their configured Type, while kept items remain local.'
+        :'Set the reusable service order, Song positions, local items and OpenLP theme for this template.'}</p>
+      <div class="field"><label>OpenLP theme</label><select id="templateEditorTheme">${plannerThemeNames().map(theme=>`<option value="${esc(theme)}" ${String(draft.theme||'Default')===String(theme)?'selected':''}>${esc(theme)}</option>`).join('')}</select><p class="meta">This theme is applied whenever this template is used to import or sync a service.</p></div>
+      <div class="template-editor-list">${(draft.items||[]).length?(draft.items||[]).map((item,index)=>`
+        <div class="template-editor-row" data-template-editor-index="${index}">
+          <div class="template-editor-order">
+            <button type="button" class="secondary compact" data-template-up="${index}" ${index===0?'disabled':''} aria-label="Move up">↑</button>
+            <span>${index+1}</span>
+            <button type="button" class="secondary compact" data-template-down="${index}" ${index===(draft.items||[]).length-1?'disabled':''} aria-label="Move down">↓</button>
+          </div>
+          <div class="template-editor-main">
+            <input class="template-editor-title" data-template-title="${index}" value="${esc(item.title||item.churchSuiteType||item.type||'Service item')}">
+            <small>${isTemplateSongSlot(item)
+              ?(csTemplates?'Song position · fills from ChurchSuite in order':'Song position')
+              :(csTemplates?esc(item.churchSuiteType||item.type||'item'):esc(item.type||'item'))}${item.templateLibraryFolderName?` · Folder: ${esc(item.templateLibraryFolderName)}`:''}${Array.isArray(item.media)&&item.media.length?` · ${item.media.length} stored attachment${item.media.length===1?'':'s'}`:''}</small>
+          </div>
+          ${isTemplateSongSlot(item)
+            ?`<select data-template-mode="${index}" disabled><option selected>${csTemplates?'Song position · next ChurchSuite song':'Song position'}</option></select>`
+            :(csTemplates?`<select data-template-mode="${index}">
+              <option value="sync" ${templateItemKind(item)==='sync'?'selected':''}>Sync from ChurchSuite</option>
+              <option value="keep" ${templateItemKind(item)==='keep'?'selected':''}>Keep in template</option>
+            </select>`:`<select data-template-mode="${index}" disabled><option selected>Template item</option></select>`)}
+          <button type="button" class="media-icon-action danger-quiet" data-template-remove="${index}" title="Remove position" aria-label="Remove position">×</button>
+        </div>`).join(''):'<div class="template-empty-state"><strong>This template is empty.</strong><p>Add ChurchSuite sync slots or local Planner items below.</p></div>'}</div>
+      <div class="template-editor-addbar">
+        <span>Add another position to this template.</span>
+        <button type="button" class="secondary" id="templateEditorAddItem">＋ Add item</button>
+      </div>
+      <div class="sheet-actions">
+        <button class="secondary" id="templateEditorBack">Back</button>
+        <button class="primary" id="templateEditorSave" ${dirty?'':'disabled'}>${dirty?'Save changes':'Saved'}</button>
+      </div>`);
+
+    const mark=()=>{dirty=true;const b=$('#templateEditorSave');if(b){b.disabled=false;b.textContent='Save changes';}};
+    const addTemplateLocalItem=(type,title)=>{
+      const item={
+        id:`template-item-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+        type,
+        title,
+        templateMode:'keep',
+        templateProtected:true,
+        retainOnChurchSuiteSync:true,
+        projected:type!=='text',
+        ready:type==='text',
+        changed:'template',
+        by:currentEditor()
+      };
+      if(type==='images'){item.autoplay='loop';item.interval=7;item.media=[];item.detail='No images yet';}
+      if(type==='sermon-images'){item.autoplay='off';item.interval=0;item.media=[];item.sermonImages=true;item.imageCategory='sermon';item.detail='No sermon images yet';}
+      if(type==='video'){item.autoStart=true;item.media=[];item.detail='No video yet';}
+      if(type==='pdf'){item.media=[];item.detail='No PDF yet';}
+      if(type==='bible'){item.passage='';item.bibleVersion='';item.bibleText='';item.detail='Bible passage';}
+      if(type==='text'){item.notes='';item.detail='Run sheet only';}
+      draft.items.push(item);
+      dirty=true;
+      renderEditor();
+    };
+    const openTemplateAddItem=()=>{
+      openSheet(`<h2>Add template item</h2>
+        <p class="meta">Add a ChurchSuite-controlled position or a local Planner item that stays in the template.</p>
+        <div class="choice-grid">
+          <button class="choice" type="button" data-template-add-song><strong>Song</strong><span>${csTemplates?'Add a Song position. ChurchSuite songs fill Song positions in order; an unassigned position remains visible.':'Add a reusable Song position to the template.'}</span></button>
+          ${csTemplates?`<button class="choice" type="button" data-template-add-kind="sync"><strong>ChurchSuite item</strong><span>Add a non-song ChurchSuite Type such as Bible Reading, Notices or Sermon.</span></button>`:''}
+          <button class="choice" type="button" data-template-add-local="sermon-images"><strong>Sermon Images</strong><span>Local sermon image item; kept in the template.</span></button>
+          <button class="choice" type="button" data-template-add-local="images"><strong>Images / Notices</strong><span>Local image presentation; kept in the template.</span></button>
+          <button class="choice" type="button" data-template-add-local="bible"><strong>Bible passage</strong><span>Local Bible item; kept in the template.</span></button>
+          <button class="choice" type="button" data-template-add-local="video"><strong>Video</strong><span>Local video item; kept in the template.</span></button>
+          <button class="choice" type="button" data-template-add-local="pdf"><strong>PDF</strong><span>Local PDF item; kept in the template.</span></button>
+          <button class="choice" type="button" data-template-add-local="text"><strong>Text / plan item</strong><span>Local run-sheet-only item; kept in the template.</span></button>
+        </div>
+        <div class="sheet-actions"><button class="secondary" id="templateAddBack">Back</button></div>`);
+      $('#templateAddBack').onclick=renderEditor;
+      setSheetCloseAction(renderEditor);
+      const addSong=body.querySelector('[data-template-add-song]');
+      if(addSong)addSong.onclick=()=>{
+        draft.items.push({
+          templateMode:'sync',
+          churchSuiteType:'Song',
+          type:'song',
+          title:'Song',
+          sourcePosition:draft.items.length
+        });
+        dirty=true;
+        renderEditor();
+      };
+      body.querySelectorAll('[data-template-add-local]').forEach(btn=>btn.onclick=()=>{
+        const type=btn.dataset.templateAddLocal;
+        const titles={images:'Images / Notices','sermon-images':'Sermon Images',bible:'Bible Reading',video:'Video',pdf:'PDF presentation',text:'Plan item'};
+        addTemplateLocalItem(type,titles[type]||'Service item');
+      });
+      const sync=body.querySelector('[data-template-add-kind="sync"]');
+      if(sync)sync.onclick=()=>{
+        openSheet(`<h2>Add ChurchSuite item</h2>
+          <div class="field"><label>ChurchSuite Type / position name</label><input id="templateSyncType" placeholder="e.g. Bible Reading, Notices, Sermon"></div>
+          <div class="field"><label>Planner item type</label><select id="templateSyncPlannerType">
+            <option value="bible">Bible passage</option>
+            <option value="images">Images</option>
+            <option value="sermon-images">Sermon Images</option>
+            <option value="video">Video</option>
+            <option value="pdf">PDF</option>
+            <option value="text">Text / plan item</option>
+          </select></div>
+          <div class="field"><label>Template label</label><input id="templateSyncTitle" placeholder="Optional; defaults to ChurchSuite Type"></div>
+          <p class="meta">This is for non-song ChurchSuite Types. Add Songs using the separate <strong>Song</strong> item so their ordered placeholder behaviour remains predictable.</p>
+          <div class="sheet-actions"><button class="secondary" id="templateSyncBack">Back</button><button class="primary" id="templateSyncAdd">Add slot</button></div>`);
+        $('#templateSyncBack').onclick=openTemplateAddItem;
+        setSheetCloseAction(openTemplateAddItem);
+        $('#templateSyncAdd').onclick=()=>{
+          const type=$('#templateSyncPlannerType').value;
+          const csType=$('#templateSyncType').value.trim();
+          if(!csType){appAlert('Enter the ChurchSuite Type or position name for this item.');return;}
+          const title=$('#templateSyncTitle').value.trim()||csType;
+          draft.items.push({
+            templateMode:'sync',
+            churchSuiteType:csType,
+            type,
+            title,
+            sourcePosition:draft.items.length
+          });
+          dirty=true;
+          renderEditor();
+        };
+      };
+    };
+    if($('#templateEditorTheme'))$('#templateEditorTheme').onchange=()=>{draft.theme=$('#templateEditorTheme').value||'Default';mark();};
+    if($('#templateEditorAddItem'))$('#templateEditorAddItem').onclick=openTemplateAddItem;
+    const leaveTemplateEditor=async()=>{
+      if(dirty){
+        const leave=await appConfirm('This template has unsaved changes.',{title:'Leave without saving?',confirmLabel:'Leave without saving',danger:true});
+        if(!leave)return;
+      }
+      openServiceTemplateManager(returnTo);
+    };
+    $('#templateEditorBack').onclick=leaveTemplateEditor;
+    setSheetCloseAction(leaveTemplateEditor);
+    $('#templateEditorSave').onclick=async()=>{
+      if(!dirty)return;
+      const pos=state.settings.serviceTemplates.findIndex(t=>String(t.id)===String(templateId));
+      if(pos<0)return;
+      draft.updatedAt=new Date().toISOString();
+      state.settings.serviceTemplates[pos]=structuredClone(draft);
+      persistPlanner();
+      if(remoteAvailable)await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
+      dirty=false;
+      renderEditor();
+    };
+    body.querySelectorAll('[data-template-title]').forEach(input=>input.oninput=()=>{
+      const i=Number(input.dataset.templateTitle);
+      if(!draft.items[i])return;
+      draft.items[i].title=input.value;
+      mark();
+    });
+    body.querySelectorAll('[data-template-mode]:not([disabled])').forEach(select=>select.onchange=()=>{
+      const i=Number(select.dataset.templateMode);
+      if(!draft.items[i])return;
+      draft.items[i].templateMode=select.value;
+      if(select.value==='keep'){draft.items[i].templateProtected=true;draft.items[i].retainOnChurchSuiteSync=true;}
+      else {draft.items[i].templateProtected=false;}
+      mark();
+    });
+    body.querySelectorAll('[data-template-up]').forEach(btn=>btn.onclick=()=>{
+      const i=Number(btn.dataset.templateUp);if(i<=0)return;
+      [draft.items[i-1],draft.items[i]]=[draft.items[i],draft.items[i-1]];dirty=true;renderEditor();
+    });
+    body.querySelectorAll('[data-template-down]').forEach(btn=>btn.onclick=()=>{
+      const i=Number(btn.dataset.templateDown);if(i>=draft.items.length-1)return;
+      [draft.items[i+1],draft.items[i]]=[draft.items[i],draft.items[i+1]];dirty=true;renderEditor();
+    });
+    body.querySelectorAll('[data-template-remove]').forEach(btn=>btn.onclick=()=>{
+      const i=Number(btn.dataset.templateRemove);draft.items.splice(i,1);dirty=true;renderEditor();
+    });
+  };
+  renderEditor();
+}
+
+function openServiceTemplateOverride(service=currentService()){
+  if(!service)return;
+  const configuredDefault=configuredDefaultTemplateIdForService(service);
+  const overrides=state.settings.serviceTemplateOverrideByServiceId||{};
+  const serviceId=String(service.id);
+  const hasOverride=Object.prototype.hasOwnProperty.call(overrides,serviceId);
+  const currentRaw=hasOverride?String(overrides[serviceId]||''):configuredDefault;
+  const current=currentRaw==='__none__'?'':currentRaw;
+
+  openSheet(`<h2>Template for ${esc(service.title)}</h2>
+    <p class="meta">This changes only this service. The default for ${esc(service.serviceTypeName||'its service type')} remains unchanged in Settings.</p>
+    <div class="template-service-choice">
+      <label class="template-service-choice-row">
+        <input type="radio" name="serviceTemplateChoice" value="__default__" ${!hasOverride?'checked':''}>
+        <span><strong>Use service-type default</strong><small>${configuredDefault?esc(serviceTemplateById(configuredDefault)?.name||'Configured template'):'No default template configured'}</small></span>
+      </label>
+      ${serviceTemplates().map(t=>`<label class="template-service-choice-row">
+        <input type="radio" name="serviceTemplateChoice" value="${esc(t.id)}" ${hasOverride&&current===String(t.id)?'checked':''}>
+        <span><strong>${esc(t.name)}</strong><small>${esc(t.serviceTypeName||'Any service')} · ${t.items?.length||0} positions</small></span>
+      </label>`).join('')}
+      <label class="template-service-choice-row">
+        <input type="radio" name="serviceTemplateChoice" value="__none__" ${hasOverride&&currentRaw==='__none__'?'checked':''}>
+        <span><strong>No template for this service</strong><small>${churchSuiteEnabled()?'ChurchSuite import choices remain available, but no template is preselected.':'This service will not use a saved template.'}</small></span>
+      </label>
+    </div>
+    <div class="sheet-actions"><button class="secondary" id="cancelServiceTemplateChoice">Cancel</button><button class="primary" id="saveServiceTemplateChoice">Use selection</button></div>`);
+
+  const cancelServiceTemplateChoice=()=>closeSheetSafely();
+  $('#cancelServiceTemplateChoice').onclick=cancelServiceTemplateChoice;
+  setSheetCloseAction(cancelServiceTemplateChoice);
+  $('#saveServiceTemplateChoice').onclick=async()=>{
+    const value=body.querySelector('input[name="serviceTemplateChoice"]:checked')?.value||'__default__';
+    if(value==='__default__')delete state.settings.serviceTemplateOverrideByServiceId[serviceId];
+    else state.settings.serviceTemplateOverrideByServiceId[serviceId]=value;
+    persistPlanner();
+    if(remoteAvailable)await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
+    sheet.close();render();
+  };
+}
+
+
+let churchSuiteFlowSequence=0;
+let churchSuiteActiveOperation=null;
+
+function beginChurchSuiteOperation(label='Working…'){
+  // A new foreground operation supersedes anything stale from an earlier
+  // Back/forward path. Individual screens still guard against double-clicks.
+  if(churchSuiteActiveOperation)churchSuiteActiveOperation.cancelled=true;
+  const operation={id:++churchSuiteFlowSequence,label,cancelled:false};
+  churchSuiteActiveOperation=operation;
+  return operation;
+}
+function churchSuiteOperationCurrent(operation){
+  return !!operation && !operation.cancelled && churchSuiteActiveOperation===operation;
+}
+function finishChurchSuiteOperation(operation){
+  if(churchSuiteActiveOperation===operation)churchSuiteActiveOperation=null;
+}
+function cancelChurchSuiteOperation(operation=null){
+  const target=operation||churchSuiteActiveOperation;
+  if(target)target.cancelled=true;
+  if(churchSuiteActiveOperation===target)churchSuiteActiveOperation=null;
+}
+
+function openChurchSuiteImportModeChoice({title='ChurchSuite import',onConfirm,onBack=null,useServiceDefaults=false}){
+  if(!churchSuiteEnabled()){
+    if(onBack)onBack(); else closeSheetSafely();
+    return;
+  }
   openSheet(`<h2>${esc(title)}</h2>
     <p class="meta">Choose what to import from ChurchSuite for this operation.</p>
     <div class="choice-grid cs-import-mode-grid">
+      ${serviceTemplates().length?`<button class="choice" type="button" data-cs-import-mode="template"><strong>Use a Template</strong><span>Use a saved service pattern; ChurchSuite-controlled slots sync while template items stay local.</span></button>`:''}
       <button class="choice" type="button" data-cs-import-mode="songs"><strong>Songs only</strong><span>Import only ChurchSuite song positions.</span></button>
       <button class="choice" type="button" data-cs-import-mode="all"><strong>All configured Types</strong><span>Import songs plus every configured ChurchSuite Type.</span></button>
       <button class="choice" type="button" data-cs-import-mode="select"><strong>Select Types</strong><span>Choose which ChurchSuite Types to use for this import.</span></button>
     </div>
     <div class="sheet-actions"><button class="secondary" id="backCsImportMode">Back</button></div>`);
-  $('#backCsImportMode').onclick=()=>onBack?onBack():sheet.close();
+  let advancing=false;
+  let transitionToken=0;
+  const leaveModeChoice=()=>{
+    transitionToken++;
+    advancing=false;
+    cancelChurchSuiteOperation();
+    onBack?onBack():sheet.close();
+  };
+  $('#backCsImportMode').textContent='Back';
+  $('#backCsImportMode').onclick=leaveModeChoice;
+  setSheetCloseAction(leaveModeChoice);
+
   body.querySelectorAll('[data-cs-import-mode]').forEach(btn=>btn.onclick=()=>{
+    if(advancing)return;
+    advancing=true;
+    const token=++transitionToken;
     body.querySelectorAll('[data-cs-import-mode]').forEach(other=>{
       other.classList.toggle('selected',other===btn);
-      other.disabled=other!==btn;
+      other.disabled=true;
     });
     const strong=btn.querySelector('strong');
     if(strong)strong.textContent=`✓ ${strong.textContent.replace(/^✓\s*/,'')}`;
     btn.classList.add('choice-working');
-    // Yield once so the selected state paints before the API/scan work starts.
-    setTimeout(()=>onConfirm(btn.dataset.csImportMode),30);
+
+    // Keep an escape route visible while advancing. Back/× invalidates the
+    // pending transition so its callback cannot open another import screen.
+    $('#backCsImportMode').disabled=false;
+    $('#backCsImportMode').textContent='Cancel';
+
+    const advance=()=>{
+      if(token!==transitionToken)return;
+      if(btn.dataset.csImportMode==='template'){
+        if(useServiceDefaults)onConfirm('template','');
+        else openTemplateChooser({
+          onBack:()=>openChurchSuiteImportModeChoice({title,onConfirm,onBack,useServiceDefaults}),
+          onChoose:template=>onConfirm('template',template.id)
+        });
+      }else onConfirm(btn.dataset.csImportMode);
+    };
+    setTimeout(advance,40);
   });
 }
 
@@ -5668,14 +6556,29 @@ function openChurchSuiteTypeSelection({scan,url='',existingServiceId=null,scanOp
       <button class="primary" id="confirmCsTypePick">Continue</button>
     </div>`);
 
-  $('#cancelCsTypePick').onclick=()=>onBack?onBack():openChurchSuiteServiceScan(url,existingServiceId,scanOptions);
+  let typePickAdvancing=false;
+  const leaveCsTypePick=()=>{
+    if(typePickAdvancing)return;
+    cancelChurchSuiteOperation();
+    onBack?onBack():openChurchSuiteServiceScan(url,existingServiceId,scanOptions);
+  };
+  $('#cancelCsTypePick').onclick=leaveCsTypePick;
+  setSheetCloseAction(leaveCsTypePick);
   $('#confirmCsTypePick').onclick=()=>{
+    if(typePickAdvancing)return;
+    typePickAdvancing=true;
     const selected=types.filter((type,index)=>$(`[data-cs-pick="${index}"]`)?.checked);
-    onConfirm(selected);
+    body.querySelectorAll('button,input').forEach(el=>el.disabled=true);
+    $('#confirmCsTypePick').textContent='Continuing…';
+    setTimeout(()=>onConfirm(selected),20);
   };
 }
 
 function openChurchSuiteServiceScan(url,existingServiceId=null,scanOptions={}){
+  if(!churchSuiteEnabled()){
+    closeSheetSafely();
+    return;
+  }
   const existing=existingServiceId
     ? state.services.find(s=>String(s.id)===String(existingServiceId))
     : null;
@@ -5700,7 +6603,7 @@ function openChurchSuiteServiceScan(url,existingServiceId=null,scanOptions={}){
     </div>
     <div class="scan-theme-note">
       <small>ChurchSuite import</small>
-      <strong>${importMode==='songs'?'Songs only':importMode==='select'?'Selected Types':'All configured Types'}</strong>
+      <strong>${esc(importModeLabel(importMode,scanOptions.templateId||''))}</strong>
     </div>
 
     <p class="meta">The OpenLP theme remains independent of ChurchSuite. Existing service details and locally-added items are not removed silently.</p>
@@ -5710,11 +6613,14 @@ function openChurchSuiteServiceScan(url,existingServiceId=null,scanOptions={}){
       <button class="primary" id="startChurchSuiteScan">Scan plan</button>
     </div>`);
 
-  $('#backFromChurchSuiteScan').onclick=()=>{
-    sheet.close();
+  const leaveChurchSuiteScan=()=>{
+    cancelChurchSuiteOperation();
+    closeSheetSafely();
     if(existing)openServicesPage();
     else openAddServiceFromServicesPage();
   };
+  $('#backFromChurchSuiteScan').onclick=leaveChurchSuiteScan;
+  setSheetCloseAction(leaveChurchSuiteScan);
 
   $('#startChurchSuiteScan').onclick=async()=>{
     const btn=$('#startChurchSuiteScan');
@@ -5725,7 +6631,10 @@ function openChurchSuiteServiceScan(url,existingServiceId=null,scanOptions={}){
       const result=await scanChurchSuitePlan(url,planId);
       if(!result?.plan)throw new Error(result?.error||'ChurchSuite did not return a service plan.');
       const nextOptions={...scanOptions,planId:result.plan.id,importMode};
-      if(importMode==='select'){
+      if(importMode==='template'&&!nextOptions.templateId){
+        const preferred=defaultTemplateIdForService(existing)||defaultTemplateIdForPlanTitle(result.plan.title);
+        openTemplateChooser({preferredId:preferred,onBack:()=>openChurchSuiteServiceScan(url,existingServiceId,scanOptions),onChoose:template=>openChurchSuiteScanPreview(url,existingServiceId,{...nextOptions,templateId:template.id},result.plan)});
+      }else if(importMode==='select'){
         openChurchSuiteTypeSelection({
           scan:result.plan,
           url,
@@ -5744,7 +6653,9 @@ function openChurchSuiteServiceScan(url,existingServiceId=null,scanOptions={}){
         <p class="meta">Check the ChurchSuite connection in Settings and confirm the API user has Planning access.</p>
         <div class="sheet-actions"><button class="secondary" id="scanFailureBack">Back</button><button class="primary" id="scanFailureDone">Done</button></div>`);
       $('#scanFailureBack').onclick=()=>openChurchSuiteServiceScan(url,existingServiceId,scanOptions);
-      $('#scanFailureDone').onclick=()=>sheet.close();
+      const leaveScanFailure=()=>closeSheetSafely();
+      $('#scanFailureDone').onclick=leaveScanFailure;
+      setSheetCloseAction(leaveScanFailure);
     }
   };
 }
@@ -5764,7 +6675,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
   };
 
   const importMode=scanOptions.importMode||existing?.churchSuiteImportMode||state.settings.churchSuiteDefaultImportMode||'all';
-  const mappedResult=mapChurchSuiteScanItems(preview.items,importMode,scanOptions.selectedTypes||null);
+  const mappedResult=mapChurchSuiteScanItems(preview.items,importMode==='template'?'all':importMode,scanOptions.selectedTypes||null);
   const destructive=[];
 
   if(existing){
@@ -5807,7 +6718,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       <div><small>Plan items</small><strong>${preview.items.length}</strong></div>
       <div><small>Items to insert</small><strong>${mappedResult.mapped.length}</strong></div>
       <div><small>OpenLP theme</small><strong>${esc(scanOptions.theme||existing?.theme||'Default')}</strong></div>
-      <div><small>ChurchSuite import</small><strong>${importMode==='songs'?'Songs only':importMode==='select'?'Selected Types':'All configured Types'}</strong></div>
+      <div><small>ChurchSuite import</small><strong>${esc(importModeLabel(importMode,scanOptions.templateId||''))}</strong></div>
       ${importMode==='select'?`<div><small>Types selected</small><strong>${esc((scanOptions.selectedTypes||[]).join(', ')||'None')}</strong></div>`:''}
     </div>
 
@@ -5874,7 +6785,9 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       </div>
     </div>`);
 
-  $('#backToChurchSuiteScan').onclick=()=>openChurchSuiteServiceScan(url,existingServiceId,scanOptions);
+  const leaveChurchSuiteScanPreview=()=>openChurchSuiteServiceScan(url,existingServiceId,scanOptions);
+  $('#backToChurchSuiteScan').onclick=leaveChurchSuiteScanPreview;
+  setSheetCloseAction(leaveChurchSuiteScanPreview);
 
   if($('#confirmChurchSuiteReplace')){
     $('#confirmChurchSuiteReplace').onchange=()=>{
@@ -5891,13 +6804,25 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
 
     const dateDisplay=formatServiceDate(preview.dateISO);
     const now=new Date().toISOString();
-    const selectedTheme=scanOptions.theme||existing?.theme||'Default';
+    let selectedTheme=scanOptions.theme||existing?.theme||'Default';
+    const serviceTargetId=existing?.id||`service-${preview.dateISO}-${Date.now()}`;
+    if(importMode==='template'){
+      const template=serviceTemplateById(scanOptions.templateId);
+      if(!template){await appAlert('The selected template could not be found.');return;}
+      selectedTheme=template.theme||selectedTheme||'Default';
+      mappedResult.mapped=await applyTemplateToMappedItems(template,mappedResult.mapped,serviceTargetId,existing?.items||[]);
+    }
 
     if(existing){
       const previousImported=(existing.items||[]).filter(i=>i.churchSuiteSourceId);
-      const preservedLocal=(existing.items||[]).filter(i=>!i.churchSuiteSourceId);
+      const activeTemplate=importMode==='template'?serviceTemplateById(scanOptions.templateId):null;
+      const templateManagedIds=activeTemplate?templateManagedLocalIds(activeTemplate,existing.items||[]):new Set();
+      const preservedLocal=(existing.items||[]).filter(i=>
+        !i.churchSuiteSourceId &&
+        !(importMode==='template'&&(i.templateProtected||templateManagedIds.has(String(i.id))))
+      );
       const incomingSourceIds=new Set(mappedResult.mapped.map(i=>String(i.churchSuiteSourceId||'')));
-      const preservedNotSynced=previousImported
+      const preservedNotSynced=importMode==='template'?[]:previousImported
         .filter(i=>!incomingSourceIds.has(String(i.churchSuiteSourceId||'')))
         .map(i=>({...i,churchSuiteExcludedFromLastSync:true}));
 
@@ -5906,6 +6831,13 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
         if(!previous)return nextItem;
         nextItem.id=previous.id;
         delete nextItem.churchSuiteExcludedFromLastSync;
+        preserveLocalAttachments(previous,nextItem);
+
+        // An explicitly retained Planner item wins over the incoming ChurchSuite copy.
+        // Keep the source identity so the item still occupies its ChurchSuite slot.
+        if(previous.retainOnChurchSuiteSync){
+          return {...structuredClone(previous),churchSuiteSourceId:nextItem.churchSuiteSourceId,churchSuiteType:nextItem.churchSuiteType,churchSuiteExcludedFromLastSync:false};
+        }
 
         // Keep locally-added presentation assets and deliberate local completion choices
         // when the same ChurchSuite item is refreshed.
@@ -5960,6 +6892,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       existing.churchSuitePlanUrl=churchSuitePublicPlanUrl(scan,url)||existing.churchSuitePlanUrl||'';
       existing.churchSuiteLastUpdated=preview.modifiedAt||now;
       existing.churchSuiteImportMode=importMode;
+      existing.serviceTemplateId=importMode==='template'?(scanOptions.templateId||existing.serviceTemplateId||null):existing.serviceTemplateId||null;
       clearChurchSuiteOutOfSync(existing);
       existing.churchSuiteSelectedTypes=importMode==='select'?(scanOptions.selectedTypes||[]):[];
       existing.items=[...mappedResult.mapped,...preservedLocal,...preservedNotSynced];
@@ -5982,7 +6915,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       return;
     }
 
-    const id=`service-${preview.dateISO}-${Date.now()}`;
+    const id=serviceTargetId;
     const service={
       id,
       title:preview.title,
@@ -6001,6 +6934,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       churchSuitePlanUrl:churchSuitePublicPlanUrl(scan,url)||'',
       churchSuiteLastUpdated:preview.modifiedAt||now,
       churchSuiteImportMode:importMode,
+      serviceTemplateId:importMode==='template'?(scanOptions.templateId||null):null,
       churchSuiteOutOfSync:false,
       churchSuiteOutOfSyncReason:'',
       churchSuiteSelectedTypes:importMode==='select'?(scanOptions.selectedTypes||[]):[]
@@ -6021,6 +6955,10 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
   };
 }
 async function openChurchSuiteAutoSyncPreview(daysBack=0){
+  if(!churchSuiteEnabled()){
+    closeSheetSafely();
+    return;
+  }
   const requestedDaysBack=Math.max(0,Math.min(30,Number(daysBack)||0));
 
   openSheet(`<h2>ChurchSuite service plans</h2>
@@ -6046,7 +6984,9 @@ async function openChurchSuiteAutoSyncPreview(daysBack=0){
       <button class="primary" id="processSelectedCsPlans" disabled>Import/Sync</button>
     </div>`);
 
-  $('#closeCsSyncPreview').onclick=()=>sheet.close();
+  const leaveCsSyncPreview=()=>{cancelChurchSuiteOperation();closeSheetSafely();};
+  $('#closeCsSyncPreview').onclick=leaveCsSyncPreview;
+  setSheetCloseAction(leaveCsSyncPreview);
   $('#reloadChurchSuiteWindow').onclick=()=>{
     const value=Number($('#churchSuitePastWindow').value||0);
     openChurchSuiteAutoSyncPreview(value);
@@ -6091,16 +7031,24 @@ async function openChurchSuiteAutoSyncPreview(daysBack=0){
       return;
     }
 
+    const selectionGroups=[...new Map(plans.map(plan=>{
+      const group=churchSuitePlanSelectionGroup(plan.title);
+      return [group.key,{...group,count:plans.filter(p=>churchSuitePlanSelectionGroup(p.title).key===group.key).length}];
+    })).values()]
+      .filter(group=>group.count>1)
+      .sort((a,b)=>a.label.localeCompare(b.label));
+
     list.innerHTML=`<div class="cs-auto-toolbar">
         <label><input type="checkbox" id="selectAllCsPlans"> Select all services</label>
-        <span>${plans.length} published plan${plans.length===1?'':'s'}</span>
+        <span id="churchSuiteSelectionCount">0 selected · ${plans.length} published</span>
       </div>
+      ${selectionGroups.length?`<div class="cs-service-subset-toolbar"><span>Select by service</span><div>${selectionGroups.map(group=>`<button type="button" class="secondary compact" data-select-cs-group="${esc(group.key)}">${esc(group.label)} <small>${group.count}</small></button>`).join('')}<button type="button" class="secondary compact" id="clearCsPlanSelection">Clear</button></div></div>`:''}
       <div class="cs-auto-plan-list">${plans.map(plan=>{
         const existing=state.services.find(s=>Number(s.churchSuitePlanId)===Number(plan.id)||String(s.churchSuitePlanIdentifier||'')===String(plan.identifier||''));
         const isPast=String(plan.dateISO||'')<today.toISOString().slice(0,10);
         const isToday=String(plan.dateISO||'')===today.toISOString().slice(0,10);
         return `<label class="cs-auto-plan-row selectable ${existing?'already-added':''} ${isPast?'past-plan':''} ${isToday?'today-plan':''}">
-          <input type="checkbox" data-cs-plan-select="${plan.id}">
+          <input type="checkbox" data-cs-plan-select="${plan.id}" data-cs-plan-group="${esc(churchSuitePlanSelectionGroup(plan.title).key)}">
           <div>
             <strong>${esc(plan.title)}</strong>
             <small>${esc(plan.dateISO)}${plan.time?` · ${esc(plan.time)}`:''}${isToday?' · Today':isPast?' · Past':''}</small>
@@ -6110,39 +7058,90 @@ async function openChurchSuiteAutoSyncPreview(daysBack=0){
       }).join('')}</div>`;
 
     const updateBatchButton=()=>{
-      const chosen=list.querySelectorAll('[data-cs-plan-select]:checked').length;
+      const all=[...list.querySelectorAll('[data-cs-plan-select]')];
+      const chosen=all.filter(cb=>cb.checked).length;
       $('#processSelectedCsPlans').disabled=!chosen;
       $('#processSelectedCsPlans').textContent='Import/Sync';
+      if($('#churchSuiteSelectionCount'))$('#churchSuiteSelectionCount').textContent=`${chosen} selected · ${plans.length} published`;
+      if($('#selectAllCsPlans')){
+        $('#selectAllCsPlans').checked=chosen===all.length&&all.length>0;
+        $('#selectAllCsPlans').indeterminate=chosen>0&&chosen<all.length;
+      }
     };
 
     $('#selectAllCsPlans').onchange=()=>{
-      list.querySelectorAll('[data-cs-plan-select]').forEach(cb=>cb.checked=$('#selectAllCsPlans').checked);
+      const checked=$('#selectAllCsPlans').checked;
+      list.querySelectorAll('[data-cs-plan-select]').forEach(cb=>cb.checked=checked);
+      updateBatchButton();
+    };
+    list.querySelectorAll('[data-select-cs-group]').forEach(btn=>btn.onclick=()=>{
+      const group=String(btn.dataset.selectCsGroup||'');
+      // A service subset selection replaces the current selection. This makes
+      // “Morning Church” or “NightChurch” genuinely useful as one-click filters.
+      list.querySelectorAll('[data-cs-plan-select]').forEach(cb=>cb.checked=String(cb.dataset.csPlanGroup||'')===group);
+      updateBatchButton();
+    });
+    if($('#clearCsPlanSelection'))$('#clearCsPlanSelection').onclick=()=>{
+      list.querySelectorAll('[data-cs-plan-select]').forEach(cb=>cb.checked=false);
       updateBatchButton();
     };
     list.querySelectorAll('[data-cs-plan-select]').forEach(cb=>cb.onchange=updateBatchButton);
     updateBatchButton();
 
+    let selectionAdvancing=false;
     $('#processSelectedCsPlans').onclick=async()=>{
+      if(selectionAdvancing)return;
+      selectionAdvancing=true;
       const ids=[...list.querySelectorAll('[data-cs-plan-select]:checked')].map(cb=>Number(cb.dataset.csPlanSelect));
       const selectedPlans=plans.filter(p=>ids.includes(Number(p.id)));
-      if(!selectedPlans.length)return;
+      if(!selectedPlans.length){selectionAdvancing=false;return;}
+      body.querySelectorAll('#churchSuitePlansList button,#churchSuitePlansList input,#churchSuitePastWindow,#reloadChurchSuiteWindow').forEach(el=>el.disabled=true);
+      $('#processSelectedCsPlans').disabled=true;
+      $('#processSelectedCsPlans').textContent='Continue…';
 
       openChurchSuiteImportModeChoice({
         title:`Import / sync ${selectedPlans.length} service${selectedPlans.length===1?'':'s'}`,
+        useServiceDefaults:true,
         onBack:()=>openChurchSuiteAutoSyncPreview(requestedDaysBack),
-        onConfirm:async importMode=>{
+        onConfirm:async(importMode,templateId='')=>{
+          if(importMode==='template'){
+            openChurchSuiteBatchTemplateConfirmation(selectedPlans,{
+              syncDaysBack:requestedDaysBack,
+              onBack:()=>openChurchSuiteAutoSyncPreview(requestedDaysBack)
+            });
+            return;
+          }
+          const operation=beginChurchSuiteOperation('Scanning ChurchSuite services…');
+          if(!operation)return;
           const scanned=[];
+          openSheet(`<h2>Preparing ChurchSuite services</h2>
+            <div class="churchsuite-working-panel"><span class="thinking-spinner" aria-hidden="true"></span><strong id="churchSuiteWorkingText">Scanning selected services…</strong><p class="meta" id="churchSuiteWorkingProgress">0 of ${selectedPlans.length}</p></div>
+            <div class="sheet-actions"><button class="secondary" id="cancelChurchSuiteScan">Cancel</button></div>`);
+          $('#cancelChurchSuiteScan').onclick=()=>{
+            cancelChurchSuiteOperation(operation);
+            openChurchSuiteAutoSyncPreview(requestedDaysBack);
+          };
           try{
-            for(const plan of selectedPlans){
+            for(let index=0;index<selectedPlans.length;index++){
+              if(!churchSuiteOperationCurrent(operation))return;
+              const plan=selectedPlans[index];
+              if($('#churchSuiteWorkingText'))$('#churchSuiteWorkingText').textContent=`Scanning ${plan.title}…`;
+              if($('#churchSuiteWorkingProgress'))$('#churchSuiteWorkingProgress').textContent=`${index} of ${selectedPlans.length}`;
               const result=await scanChurchSuitePlan('',plan.id);
+              if(!churchSuiteOperationCurrent(operation))return;
               if(result?.plan)scanned.push(result.plan);
+              if($('#churchSuiteWorkingProgress'))$('#churchSuiteWorkingProgress').textContent=`${index+1} of ${selectedPlans.length}`;
             }
           }catch(err){
+            if(!churchSuiteOperationCurrent(operation))return;
+            finishChurchSuiteOperation(operation);
             appAlert(err?.message||String(err));
             openChurchSuiteAutoSyncPreview(requestedDaysBack);
             return;
           }
-          const continueBatch=selectedTypes=>openChurchSuiteBatchPreview(scanned,{importMode,selectedTypes,syncDaysBack:requestedDaysBack});
+          if(!churchSuiteOperationCurrent(operation))return;
+          finishChurchSuiteOperation(operation);
+          const continueBatch=selectedTypes=>openChurchSuiteBatchPreview(scanned,{importMode,selectedTypes,syncDaysBack:requestedDaysBack,templateId});
           if(importMode==='select'){
             const unionScan={items:scanned.flatMap(plan=>plan.items||[])};
             openChurchSuiteTypeSelection({
@@ -6160,20 +7159,193 @@ async function openChurchSuiteAutoSyncPreview(daysBack=0){
   }
 }
 
-function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,syncDaysBack=0}={}){
+
+
+function churchSuiteTemplateSelectionKeys(plan){
+  const keys=[];
+  if(plan?.id!==undefined&&plan?.id!==null&&String(plan.id).trim())keys.push(`id:${String(plan.id).trim()}`);
+  if(String(plan?.identifier||'').trim())keys.push(`identifier:${String(plan.identifier).trim()}`);
+  const title=String(plan?.title||'').trim().toLowerCase().replace(/\s+/g,' ');
+  const date=String(plan?.dateISO||'').trim();
+  if(title||date)keys.push(`title-date:${date}|${title}`);
+  return keys;
+}
+function templateSelectionForPlan(selections,plan){
+  for(const key of churchSuiteTemplateSelectionKeys(plan)){
+    const value=String(selections?.[key]||'').trim();
+    if(value)return value;
+  }
+  // Backward compatibility with v1.76.14's plan-id-only map.
+  const legacy=String(selections?.[String(plan?.id||'')]||'').trim();
+  return legacy;
+}
+function setTemplateSelectionForPlan(selections,plan,templateId){
+  const value=String(templateId||'').trim();
+  for(const key of churchSuiteTemplateSelectionKeys(plan))selections[key]=value;
+  if(plan?.id!==undefined&&plan?.id!==null)selections[String(plan.id)]=value;
+}
+
+function openChurchSuiteBatchTemplateConfirmation(plans,{syncDaysBack=0,onBack=null,plansAreScanned=false,templateSelections={}}={}){
+  const templates=serviceTemplates();
   const rows=plans.map(plan=>{
     const existing=state.services.find(s=>Number(s.churchSuitePlanId)===Number(plan.id)||String(s.churchSuitePlanIdentifier||'')===String(plan.identifier||''));
-    const mapped=mapChurchSuiteScanItems(plan.items||[],importMode,selectedTypes);
-    return {plan,existing,mapped};
+    const mapped=churchSuiteMappedServiceType(plan.title);
+    const resolvedServiceType=churchSuiteTemplateServiceType(plan.title,existing);
+    const serviceTypeId=resolvedServiceType?.id||existing?.serviceTypeId||mapped.serviceTypeId||null;
+    const serviceTypeName=resolvedServiceType?.name||existing?.serviceTypeName||mapped.serviceTypeName||plan.title;
+    const configuredDefault=serviceTypeId?String(state.settings.defaultTemplateByServiceType?.[String(serviceTypeId)]||''):'';
+    const carried=templateSelectionForPlan(templateSelections,plan);
+    const effective=carried||(existing?defaultTemplateIdForService(existing):(configuredDefault||''));
+    return {plan,existing,serviceTypeId,serviceTypeName,configuredDefault,selectedTemplateId:effective};
   });
+
+  const render=()=>{
+    openSheet(`<h2>Confirm templates</h2>
+      <p class="meta">Review the template for each selected ChurchSuite service before anything is scanned or imported. Changing a row affects only this import unless you also choose <strong>Make default</strong>.</p>
+      <div class="cs-batch-template-list">${rows.map((row,index)=>`
+        <div class="cs-batch-template-row">
+          <div><strong>${esc(row.plan.title)}</strong><small>${esc(row.plan.dateISO||'')} · ${esc(row.serviceTypeName||'Service')}</small></div>
+          <select data-batch-template-select="${index}">
+            <option value="">Choose template…</option>
+            ${templates.map(t=>`<option value="${esc(t.id)}" ${String(row.selectedTemplateId)===String(t.id)?'selected':''}>${esc(t.name)}${String(row.configuredDefault)===String(t.id)?' · default':''}</option>`).join('')}
+          </select>
+          ${row.serviceTypeId?`<label class="template-default-inline ${row.selectedTemplateId?'':'is-disabled'}">
+            <input type="checkbox" data-batch-template-default="${index}" ${row.selectedTemplateId?'':'disabled'}>
+            <span data-batch-template-default-label="${index}">${
+              row.configuredDefault
+                ?`Make selected template the new default for ${esc(row.serviceTypeName)}`
+                :`Make selected template the default for ${esc(row.serviceTypeName)}`
+            }</span>
+          </label>`:'<span class="meta">This plan is not matched to a recurring service type, so it cannot have a service-type default.</span>'}
+        </div>`).join('')}</div>
+      <div class="sheet-actions"><button class="secondary" id="batchTemplateBack">Back</button><button class="primary" id="batchTemplateContinue">Continue</button></div>`);
+
+    const leave=()=>{
+      cancelChurchSuiteOperation();
+      onBack?onBack():openChurchSuiteAutoSyncPreview(syncDaysBack);
+    };
+    $('#batchTemplateBack').onclick=leave;
+    setSheetCloseAction(leave);
+    body.querySelectorAll('[data-batch-template-select]').forEach(select=>select.onchange=()=>{
+      const index=Number(select.dataset.batchTemplateSelect);
+      const row=rows[index];
+      row.selectedTemplateId=select.value;
+      setTemplateSelectionForPlan(templateSelections,row.plan,select.value);
+      const box=body.querySelector(`[data-batch-template-default="${index}"]`);
+      const label=body.querySelector(`[data-batch-template-default-label="${index}"]`);
+      if(box){
+        box.disabled=!select.value;
+        if(!select.value)box.checked=false;
+        box.closest('.template-default-inline')?.classList.toggle('is-disabled',!select.value);
+      }
+      if(label){
+        label.textContent=row.configuredDefault
+          ?`Make selected template the new default for ${row.serviceTypeName}`
+          :`Make selected template the default for ${row.serviceTypeName}`;
+      }
+    });
+    $('#batchTemplateContinue').onclick=async()=>{
+      const missing=rows.filter(row=>!row.selectedTemplateId);
+      if(missing.length){await appAlert(`Choose a template for: ${missing.map(r=>r.plan.title).join(', ')}.`);return;}
+      const btn=$('#batchTemplateContinue');btn.disabled=true;btn.textContent='Saving choices…';
+      let defaultsChanged=false;
+      body.querySelectorAll('[data-batch-template-default]').forEach(box=>{
+        if(!box.checked)return;
+        const row=rows[Number(box.dataset.batchTemplateDefault)];
+        if(row?.serviceTypeId&&row.selectedTemplateId){
+          state.settings.defaultTemplateByServiceType[String(row.serviceTypeId)]=row.selectedTemplateId;
+          row.configuredDefault=row.selectedTemplateId;
+          defaultsChanged=true;
+        }
+      });
+      if(defaultsChanged){
+        persistPlanner();
+        if(remoteAvailable)await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
+      }
+      for(const row of rows)setTemplateSelectionForPlan(templateSelections,row.plan,row.selectedTemplateId);
+
+      if(plansAreScanned){
+        cancelChurchSuiteOperation();
+        openChurchSuiteBatchPreview(plans,{importMode:'template',syncDaysBack,templateSelections});
+        return;
+      }
+
+      const operation=beginChurchSuiteOperation('Scanning ChurchSuite services…');
+      const scanned=[];
+      openSheet(`<h2>Preparing ChurchSuite services</h2>
+        <div class="churchsuite-working-panel"><span class="thinking-spinner" aria-hidden="true"></span><strong id="churchSuiteWorkingText">Scanning selected services…</strong><p class="meta" id="churchSuiteWorkingProgress">0 of ${plans.length}</p></div>
+        <div class="sheet-actions"><button class="secondary" id="cancelConfirmedTemplateScan">Cancel</button></div>`);
+      const cancelScan=()=>{
+        cancelChurchSuiteOperation(operation);
+        openChurchSuiteBatchTemplateConfirmation(plans,{syncDaysBack,onBack,plansAreScanned:false,templateSelections});
+      };
+      $('#cancelConfirmedTemplateScan').onclick=cancelScan;
+      setSheetCloseAction(cancelScan);
+      try{
+        for(let index=0;index<plans.length;index++){
+          if(!churchSuiteOperationCurrent(operation))return;
+          const plan=plans[index];
+          if($('#churchSuiteWorkingText'))$('#churchSuiteWorkingText').textContent=`Scanning ${plan.title}…`;
+          if($('#churchSuiteWorkingProgress'))$('#churchSuiteWorkingProgress').textContent=`${index} of ${plans.length}`;
+          const result=await scanChurchSuitePlan('',plan.id);
+          if(!churchSuiteOperationCurrent(operation))return;
+          if(result?.plan){
+            // Carry the user's confirmed template choice onto every stable key
+            // exposed by the detailed scan result.
+            const chosen=templateSelectionForPlan(templateSelections,plan);
+            if(chosen)setTemplateSelectionForPlan(templateSelections,result.plan,chosen);
+            scanned.push(result.plan);
+          }
+          if($('#churchSuiteWorkingProgress'))$('#churchSuiteWorkingProgress').textContent=`${index+1} of ${plans.length}`;
+        }
+      }catch(err){
+        if(churchSuiteOperationCurrent(operation)){
+          finishChurchSuiteOperation(operation);
+          await appAlert(err?.message||String(err));
+          openChurchSuiteBatchTemplateConfirmation(plans,{syncDaysBack,onBack,plansAreScanned:false,templateSelections});
+        }
+        return;
+      }
+      if(!churchSuiteOperationCurrent(operation))return;
+      finishChurchSuiteOperation(operation);
+      openChurchSuiteBatchPreview(scanned,{importMode:'template',syncDaysBack,templateSelections});
+    };
+  };
+  render();
+}
+
+function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,syncDaysBack=0,templateId='',templateSelections={}}={}){
+  const rows=plans.map(plan=>{
+    const existing=state.services.find(s=>Number(s.churchSuitePlanId)===Number(plan.id)||String(s.churchSuitePlanIdentifier||'')===String(plan.identifier||''));
+    const resolvedTemplateId=importMode==='template'?(templateSelectionForPlan(templateSelections,plan)||templateId||defaultTemplateIdForService(existing)||defaultTemplateIdForPlanTitle(plan.title)):'';
+    const template=resolvedTemplateId?serviceTemplateById(resolvedTemplateId):null;
+    const mapped=mapChurchSuiteScanItems(plan.items||[],importMode==='template'?'all':importMode,selectedTypes);
+    return {plan,existing,mapped,template,resolvedTemplateId};
+  });
+
+  if(importMode==='template'){
+    const missing=rows.filter(r=>!r.template);
+    if(missing.length){
+      // Do not dead-end on a missing default. Return to the explicit template
+      // chooser with the scanned plan data and keep any choices already made.
+      cancelChurchSuiteOperation();
+      openChurchSuiteBatchTemplateConfirmation(plans,{
+        syncDaysBack,
+        plansAreScanned:true,
+        templateSelections,
+        onBack:()=>openChurchSuiteAutoSyncPreview(syncDaysBack)
+      });
+      return;
+    }
+  }
 
   openSheet(`<h2>Confirm ChurchSuite import / sync</h2>
     <p class="meta">${rows.length} service${rows.length===1?'':'s'} selected. ${
-      importMode==='songs'?'Songs only':importMode==='select'?`Selected Types: ${esc((selectedTypes||[]).join(', ')||'none')}`:'All configured Types'
+      importMode==='template'?'Using the confirmed template for each service':importMode==='songs'?'Songs only':importMode==='select'?`Selected Types: ${esc((selectedTypes||[]).join(', ')||'none')}`:'All configured Types'
     }.</p>
-    <div class="cs-batch-preview">${rows.map(({plan,existing,mapped})=>`
+    <div class="cs-batch-preview">${rows.map(({plan,existing,mapped,template})=>`
       <div class="cs-batch-row">
-        <div><strong>${esc(plan.title)}</strong><small>${esc(plan.dateISO)} · ${plan.items?.length||0} ChurchSuite items · ${mapped.mapped.length} to import</small></div>
+        <div><strong>${esc(plan.title)}</strong><small>${esc(plan.dateISO)} · ${plan.items?.length||0} ChurchSuite items · ${mapped.mapped.length} to import${importMode==='template'&&template?` · Theme: ${esc(template.theme||'Default')}`:''}</small></div>
         <span>${existing?'Sync existing':'Add new'}</span>
       </div>`).join('')}</div>
     <p class="meta">Review the selected services above. The change summary and required confirmation stay pinned below.</p>
@@ -6197,18 +7369,51 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
       </div>
     </div>`);
 
-  $('#backCsBatch').onclick=()=>openChurchSuiteAutoSyncPreview(syncDaysBack);
+  const leaveCsBatch=()=>{cancelChurchSuiteOperation();openChurchSuiteAutoSyncPreview(syncDaysBack);};
+  $('#backCsBatch').onclick=leaveCsBatch;
+  setSheetCloseAction(leaveCsBatch);
   $('#confirmCsBatch').onchange=()=>$('#runCsBatch').disabled=!$('#confirmCsBatch').checked;
+  let batchStarted=false;
   $('#runCsBatch').onclick=async()=>{
-    const button=$('#runCsBatch');button.disabled=true;button.textContent='Processing…';
-    for(const {plan,existing,mapped} of rows){
+    if(batchStarted)return;
+    batchStarted=true;
+    const operation=beginChurchSuiteOperation('Importing ChurchSuite services…');
+    if(!operation){batchStarted=false;return;}
+    const button=$('#runCsBatch');
+    body.querySelectorAll('#sheetFooter button,#sheetFooter input').forEach(el=>el.disabled=true);
+    button.disabled=true;button.textContent='Processing…';
+    const cancel=document.createElement('button');
+    cancel.type='button';
+    cancel.className='secondary';
+    cancel.id='cancelCsBatchImport';
+    cancel.textContent='Cancel';
+    $('#sheetFooter').appendChild(cancel);
+    cancel.disabled=false;
+    cancel.onclick=()=>{
+      cancel.disabled=true;
+      cancel.textContent='Cancelling…';
+      cancelChurchSuiteOperation(operation);
+    };
+    setSheetCloseAction(()=>{
+      if(!cancel.disabled)cancel.click();
+    });
+    for(let rowIndex=0;rowIndex<rows.length;rowIndex++){
+      if(!churchSuiteOperationCurrent(operation))break;
+      const {plan,existing,mapped,template,resolvedTemplateId}=rows[rowIndex];
+      button.textContent=`Processing ${rowIndex+1} of ${rows.length}…`;
       const now=new Date().toISOString();
       const dateDisplay=formatServiceDate(plan.dateISO);
+      const targetServiceId=existing?.id||`service-${plan.dateISO}-${Date.now()}-${plan.id}`;
+      if(importMode==='template'&&template)mapped.mapped=await applyTemplateToMappedItems(template,mapped.mapped,targetServiceId,existing?.items||[]);
       if(existing){
         const previousImported=(existing.items||[]).filter(i=>i.churchSuiteSourceId);
-        const preservedLocal=(existing.items||[]).filter(i=>!i.churchSuiteSourceId);
+        const templateManagedIds=importMode==='template'&&template?templateManagedLocalIds(template,existing.items||[]):new Set();
+        const preservedLocal=(existing.items||[]).filter(i=>
+          !i.churchSuiteSourceId &&
+          !(importMode==='template'&&(i.templateProtected||templateManagedIds.has(String(i.id))))
+        );
         const incomingSourceIds=new Set(mapped.mapped.map(i=>String(i.churchSuiteSourceId||'')));
-        const preservedNotSynced=previousImported
+        const preservedNotSynced=importMode==='template'?[]:previousImported
           .filter(i=>!incomingSourceIds.has(String(i.churchSuiteSourceId||'')))
           .map(i=>({...i,churchSuiteExcludedFromLastSync:true}));
 
@@ -6216,6 +7421,11 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
           const previous=previousImported.find(old=>String(old.churchSuiteSourceId)===String(nextItem.churchSuiteSourceId));
           if(!previous)return nextItem;
           nextItem.id=previous.id;
+          preserveLocalAttachments(previous,nextItem);
+
+          if(previous.retainOnChurchSuiteSync){
+            return {...structuredClone(previous),churchSuiteSourceId:nextItem.churchSuiteSourceId,churchSuiteType:nextItem.churchSuiteType,churchSuiteExcludedFromLastSync:false};
+          }
 
           if(nextItem.type==='images'){
             if(Array.isArray(previous.media)&&previous.media.length){
@@ -6272,9 +7482,11 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
         existing.kind=mappedService.kind;
         existing.serviceTypeId=mappedService.serviceTypeId;
         existing.serviceTypeName=mappedService.serviceTypeName;
-        // Do not overwrite an individual theme during re-sync. The mapping
-        // controls category; theme defaults only apply when a service is first created.
+        // Template-driven sync owns the OpenLP theme. Other sync modes preserve
+        // the service's individual theme.
+        if(importMode==='template'&&template?.theme)existing.theme=template.theme;
         existing.churchSuiteImportMode=importMode;
+        existing.serviceTemplateId=importMode==='template'?resolvedTemplateId:(existing.serviceTemplateId||null);
         clearChurchSuiteOutOfSync(existing);
         existing.churchSuiteSelectedTypes=importMode==='select'?(selectedTypes||[]):[];
         existing.items=[...mapped.mapped,...preservedLocal,...preservedNotSynced];
@@ -6285,17 +7497,18 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
         await createRemoteService(existing);
       }else{
         const service={
-          id:`service-${plan.dateISO}-${Date.now()}-${plan.id}`,
+          id:targetServiceId,
           title:plan.title,dateISO:plan.dateISO,date:dateDisplay,
           kind:churchSuiteMappedServiceType(plan.title).kind,
           serviceTypeId:churchSuiteMappedServiceType(plan.title).serviceTypeId,
           serviceTypeName:churchSuiteMappedServiceType(plan.title).serviceTypeName,
-          theme:churchSuiteMappedServiceType(plan.title).defaultTheme||'Default',published:false,
+          theme:(importMode==='template'&&template?.theme)?template.theme:(churchSuiteMappedServiceType(plan.title).defaultTheme||'Default'),published:false,
           items:mapped.mapped,activity:[[currentEditor(),'imported ChurchSuite service plan','just now']],
           lastEditedAt:now,lastEditedBy:currentEditor(),lastEditedAction:'imported ChurchSuite service plan',
           churchSuitePlanId:plan.id,churchSuitePlanIdentifier:plan.identifier,
           churchSuitePlanUrl:churchSuitePublicPlanUrl(plan,''),churchSuiteLastUpdated:plan.modifiedAt||now,
           churchSuiteImportMode:importMode,
+          serviceTemplateId:importMode==='template'?resolvedTemplateId:null,
           churchSuiteOutOfSync:false,
           churchSuiteOutOfSyncReason:'',
           churchSuiteSelectedTypes:importMode==='select'?(selectedTypes||[]):[]
@@ -6304,6 +7517,15 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
         await createRemoteService(service);
       }
     }
+    if(!churchSuiteOperationCurrent(operation)){
+      finishChurchSuiteOperation(operation);
+      persistPlanner();
+      sheet.close();
+      renderServicesPage();
+      await appAlert('ChurchSuite import was cancelled. Services already completed before cancellation were kept; remaining services were not processed.',{title:'Import cancelled'});
+      return;
+    }
+    finishChurchSuiteOperation(operation);
     persistPlanner();
     sheet.close();
     renderServicesPage();
@@ -6876,7 +8098,7 @@ function openSettings(){
               <li><strong>Do not delete the old secret yet.</strong></li>
               <li>In the Cloudflare dashboard open <strong>Workers &amp; Pages → OpenLP Service Planner → Settings → Variables and Secrets</strong>.</li>
               <li>Find <code>MICROSOFT_CLIENT_SECRET</code>, edit it, replace its value with the new Entra secret Value, then select <strong>Deploy</strong>.</li>
-              <li>Open the Planner in a private/incognito browser and confirm <strong>Sign in with your configured Microsoft SSO domain</strong> works.</li>
+              <li>Open the Planner in a private/incognito browser and confirm <strong>Sign in with @kpc.org.au SSO</strong> works.</li>
               <li>Only after the new login works, return to Entra and delete the old client secret.</li>
               <li>Back here, change <strong>Renewal due</strong> to the expiry date of the new secret and save Settings.</li>
             </ol>
@@ -6947,6 +8169,29 @@ function openSettings(){
         <button class="secondary" id="openLyricsZipExport">Export OpenLyrics ZIP</button>
       </div>
       <p class="meta">In the Cloudflare version, import will replace/update the shared song library and export will generate an OpenLP-compatible SQLite database. This browser prototype records the selected database but does not rewrite SQLite yet.</p>
+    </div>
+
+    <div class="settings-section">
+      <h3>Song statistics data</h3>
+      <p class="meta">Song statistics are recorded when OpenLP services are downloaded or shared. Deleting statistics does not delete songs or service plans, but the deleted usage history cannot be reconstructed automatically.</p>
+      <div class="statistics-delete-card">
+        <div>
+          <strong>Delete a date range</strong>
+          <p class="meta">Delete recorded song usage from and including the selected dates.</p>
+        </div>
+        <div class="statistics-date-range">
+          <div class="field"><label>From</label><input id="deleteStatisticsFrom" type="date"></div>
+          <div class="field"><label>To</label><input id="deleteStatisticsTo" type="date"></div>
+          <button class="secondary" type="button" id="deleteStatisticsRange">Delete date range…</button>
+        </div>
+      </div>
+      <div class="statistics-delete-card danger-zone-card">
+        <div>
+          <strong>Delete all song statistics</strong>
+          <p class="meta">Removes the complete song-usage history while leaving the song library and services unchanged.</p>
+        </div>
+        <button class="danger" type="button" id="deleteAllStatistics">Delete all statistics…</button>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -7021,6 +8266,7 @@ function openSettings(){
         <button class="secondary compact" id="addRegularServiceType" type="button">＋ Service type</button>
       </div>
       <div id="regularServiceTypesList" class="regular-service-types-list"></div>
+      <div class="template-settings-summary"><strong>Service templates</strong><span>${serviceTemplates().length?`${serviceTemplates().length} saved template${serviceTemplates().length===1?'':'s'}`:'No templates saved yet'}</span><button class="secondary compact" type="button" id="manageServiceTemplates">Manage templates</button></div>
       <p class="meta">Services that are not one of these recurring types are treated as <strong>One-off services</strong>.</p>
     </div>
 
@@ -7032,17 +8278,16 @@ function openSettings(){
         <label>ChurchSuite</label>
         <select id="churchSuiteMode">
           <option value="off">Off</option>
-          <option value="manual">ChurchSuite manual</option>
-          <option value="auto">ChurchSuite automatic</option>
+          <option value="on">On</option>
         </select>
       </div>
       <div class="field churchsuite-plan-base-field" id="churchSuitePlanBaseField">
         <label>ChurchSuite Plan Page address</label>
         <input id="churchSuitePlanBaseUrl" type="url" placeholder="https://yourchurch.churchsuite.com" value="${esc(s.churchSuitePlanBaseUrl||'')}">
-        <p class="meta">Enter this once for ChurchSuite Auto. The planner then creates each service's published Plan Page link automatically. A manually-entered Plan Page URL also fills this automatically.</p>
+        <p class="meta">Enter this once so the planner can build published Plan Page links automatically. You can still add or edit a ChurchSuite Plan Page URL manually on any individual service.</p>
       </div>
 
-      <p class="meta">Manual mode stores a ChurchSuite plan link with each service. Automatic mode prepares API configuration and service-plan sync controls.</p>
+      <p class="meta">When ChurchSuite is On, you can sync published plans in bulk or link an individual service by adding/editing its ChurchSuite Plan Page URL manually.</p>
 
       <div id="churchSuiteTypesSettings" hidden>
         <div class="settings-subsection-head">
@@ -7076,8 +8321,8 @@ function openSettings(){
       </div>
 
       <div id="churchSuiteAutoSettings" class="extension-config" hidden>
-        <strong>ChurchSuite automatic</strong>
-        <p class="meta">Automatic mode enables the Services → Sync ChurchSuite list of upcoming published plans. Individual linked services can also be synced on demand.</p>
+        <strong>ChurchSuite published plans</strong>
+        <p class="meta">Use Services → Sync ChurchSuite to work with upcoming published plans. Individual services can also be linked or re-linked manually by URL.</p>
 
         <div class="extension-nested-card">
           <label class="toggle"><span>Publish a ChurchSuite service-plan directory</span><input id="churchSuiteDirectoryEnabled" type="checkbox" ${s.churchSuiteDirectoryEnabled?'checked':''}></label>
@@ -7135,7 +8380,7 @@ function openSettings(){
   showSettingsTab('general');
 
   $('#editorName').value=currentEditor();
-  $('#churchSuiteMode').value=s.churchSuiteMode||'off';
+  $('#churchSuiteMode').value=churchSuiteEnabled()?'on':'off';
   const syncChurchSuiteDirectorySettings=()=>{
     const enabled=!!$('#churchSuiteDirectoryEnabled')?.checked;
     if($('#churchSuiteDirectorySettings'))$('#churchSuiteDirectorySettings').hidden=!enabled;
@@ -7151,7 +8396,7 @@ function openSettings(){
   };
   const updateChurchSuiteBaseVisibility=()=>{
     const field=$('#churchSuitePlanBaseField');
-    if(field)field.hidden=!['manual','auto'].includes($('#churchSuiteMode').value);
+    if(field)field.hidden=$('#churchSuiteMode').value==='off';
   };
   updateChurchSuiteBaseVisibility();
 $('#exportTransferHelp').value=s.exportTransferHelp||'';
@@ -7159,6 +8404,7 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
   let settingsDirty=false;
   let draftChurchSuiteTypes=(s.churchSuiteTypes||DEFAULT_CHURCHSUITE_TYPES).map(x=>({...x}));
   let draftRegularServiceTypes=regularServiceTypes().map(x=>({...x}));
+  let draftDefaultTemplateByServiceType={...(s.defaultTemplateByServiceType||{})};
   let draftChurchSuiteServiceMappings=churchSuiteServiceMappings().map(x=>({...x}));
   let discoveredChurchSuiteServiceNames=[...new Set(draftChurchSuiteServiceMappings.map(x=>x.churchSuiteName))].sort((a,b)=>a.localeCompare(b));
 
@@ -7207,6 +8453,7 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
         <div class="field"><label>Default OpenLP theme</label><select data-rst-theme="${i}">
           ${availableThemes().map(theme=>`<option value="${esc(theme)}" ${String(t.defaultTheme)===theme?'selected':''}>${esc(theme)}</option>`).join('')}
         </select></div>
+        <div class="field"><label>Default template</label><select data-rst-template="${i}"><option value="">None</option>${serviceTemplates().map(tpl=>`<option value="${esc(tpl.id)}" ${String(draftDefaultTemplateByServiceType[String(t.id)]||'')===String(tpl.id)?'selected':''}>${esc(tpl.name)}</option>`).join('')}</select></div>
         <button type="button" class="media-icon-action danger-quiet rst-delete" data-rst-delete="${i}" title="Remove service type" aria-label="Remove ${esc(t.name)}">×</button>
       </div>`).join(''):'<p class="meta">No regular service types. Every service will be treated as a one-off until one is added.</p>';
 
@@ -7222,6 +8469,14 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
     list.querySelectorAll('[data-rst-theme]').forEach(el=>el.onchange=()=>{
       draftRegularServiceTypes[Number(el.dataset.rstTheme)].defaultTheme=el.value;
       markSettingsDirty();
+    });
+    list.querySelectorAll('[data-rst-template]').forEach(el=>el.onchange=()=>{
+      const type=draftRegularServiceTypes[Number(el.dataset.rstTemplate)];
+      if(type){
+        if(el.value)draftDefaultTemplateByServiceType[String(type.id)]=el.value;
+        else delete draftDefaultTemplateByServiceType[String(type.id)];
+        markSettingsDirty();
+      }
     });
     list.querySelectorAll('[data-rst-delete]').forEach(btn=>btn.onclick=()=>{
       const idx=Number(btn.dataset.rstDelete);
@@ -7296,7 +8551,7 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
     $('#churchSuiteTypesSettings').hidden=mode==='off';
     $('#churchSuiteServiceMappingSettings').hidden=mode==='off';
     $('#churchSuiteConnectionSettings').hidden=mode==='off';
-    $('#churchSuiteAutoSettings').hidden=mode!=='auto';
+    $('#churchSuiteAutoSettings').hidden=mode==='off';
     if($('#churchSuitePlanBaseField'))$('#churchSuitePlanBaseField').hidden=mode==='off';
     syncChurchSuiteDirectorySettings();
   };
@@ -7670,6 +8925,62 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
   $('#managePlannerUsers')?.addEventListener('click',openPlannerUserManagement);
   $('#manageSongClassifications')?.addEventListener('click',openSongClassificationManager);
 
+  const deleteSongStatistics=async({from='',to='',all=false}={})=>{
+    if(!remoteAvailable){
+      await appAlert('Statistics deletion is only available when connected to the Planner server.',{title:'Server connection required'});
+      return;
+    }
+    if(!all){
+      if(!from||!to){
+        await appAlert('Choose both a From and To date.',{title:'Choose a date range'});
+        return;
+      }
+      if(from>to){
+        await appAlert('The From date must be on or before the To date.',{title:'Check the date range'});
+        return;
+      }
+    }
+
+    const stats=await loadSongStatistics(all?{}:{from,to});
+    const count=Number(stats.totalUsages||0);
+    if(!count){
+      await appAlert(all?'There are no song statistics to delete.':`There are no song statistics recorded from ${from} to ${to}.`,{title:'Nothing to delete'});
+      return;
+    }
+
+    const firstMessage=all
+      ?`This will permanently delete all ${count} recorded song usage entr${count===1?'y':'ies'}. Songs and service plans will not be deleted.`
+      :`This will permanently delete ${count} recorded song usage entr${count===1?'y':'ies'} from ${from} through ${to}, inclusive. Songs and service plans will not be deleted.`;
+    const proceed=await appConfirm(firstMessage,{
+      title:all?'Delete all song statistics?':'Delete song statistics for this date range?',
+      confirmLabel:'Continue',
+      danger:true
+    });
+    if(!proceed)return;
+
+    const finalMessage=all
+      ?'This cannot be undone. Delete the complete song-statistics history now?'
+      :`This cannot be undone. Delete song statistics from ${from} through ${to} now?`;
+    const confirmed=await appConfirm(finalMessage,{
+      title:'Final confirmation',
+      confirmLabel:all?'Delete all statistics':'Delete date range',
+      danger:true
+    });
+    if(!confirmed)return;
+
+    const result=await apiFetch('/api/admin/song-usage',{method:'DELETE',body:JSON.stringify(all?{all:true}:{from,to})});
+    await appAlert(`${Number(result.deleted||0)} song usage entr${Number(result.deleted||0)===1?'y':'ies'} deleted.`,{title:'Statistics deleted'});
+    openSettings();
+  };
+
+  if($('#deleteStatisticsRange'))$('#deleteStatisticsRange').onclick=()=>deleteSongStatistics({
+    from:$('#deleteStatisticsFrom')?.value||'',
+    to:$('#deleteStatisticsTo')?.value||''
+  });
+  if($('#deleteAllStatistics'))$('#deleteAllStatistics').onclick=()=>deleteSongStatistics({all:true});
+
+  if($('#manageServiceTemplates'))$('#manageServiceTemplates').onclick=()=>openServiceTemplateManager('settings');
+
   $('#sqliteImport').onchange=e=>{
     const file=e.target.files?.[0];
     if(!file)return;
@@ -7726,7 +9037,7 @@ ${err.message||String(err)}`,{title:'Could not verify user access'});
       }
     }
 
-    s.churchSuiteMode=$('#churchSuiteMode').value;
+    s.churchSuiteMode=$('#churchSuiteMode').value==='on'?'on':'off';
     const planBaseRaw=$('#churchSuitePlanBaseUrl')?.value.trim()||'';
     if(planBaseRaw){
       try{
@@ -7748,6 +9059,7 @@ ${err.message||String(err)}`,{title:'Could not verify user access'});
         plannerTypeId:String(x.plannerTypeId||'one-off')
       }))
       .filter(x=>x.churchSuiteName);
+    s.defaultTemplateByServiceType={...draftDefaultTemplateByServiceType};
 
     s.churchSuiteDirectoryEnabled=!!$('#churchSuiteDirectoryEnabled')?.checked;
     const directoryPath=($('#churchSuiteDirectoryPath')?.value||'churchsuite-plans')
@@ -7875,9 +9187,10 @@ function openAddThemeWarning(){
 $('#activityBtn').onclick=()=>openActivity();
 
 function openActivity(){
+  const canClearActivity=Number(authenticatedUser?.accessLevel||0)>=3;
   openSheet(`<div class="sheet-title-row">
       <h2>Activity</h2>
-      <button class="secondary compact" id="clearActivityBtn" ${state.activity.length?'':'disabled'}>Clear activity</button>
+      ${canClearActivity?`<button class="secondary compact" id="clearActivityBtn" ${state.activity.length?'':'disabled'}>Clear activity</button>`:''}
     </div>
     <div class="activity-list">
       ${state.activity.length
@@ -7903,6 +9216,7 @@ function openActivity(){
         </div>`);
 
       $('#cancelClearActivity').onclick=openActivity;
+      setSheetCloseAction(openActivity);
       $('#confirmClearActivity').onclick=async()=>{
         const btn=$('#confirmClearActivity');
         btn.disabled=true;
@@ -7995,7 +9309,7 @@ async function openExportOpenLP(){
       <div class="export-footer-note">
         <label class="export-footer-checkbox">
           <input type="checkbox" id="markDownloadedOnExport" checked>
-          <span>Mark the service status - 'downloaded'.</span>
+          <span>Mark service as downloaded</span>
         </label>
         ${check.errors?.length
           ? `<small>Incomplete export omits the listed missing/unsupported projected items and leaves the rest of the service intact.</small>`
@@ -8330,13 +9644,16 @@ function openLibraryHub(){
       <button class="library-card" id="libraryVideos"><strong>Video library</strong><span>Stored + service-specific files</span></button>
       <button class="library-card" id="libraryImages"><strong>Image library</strong><span>Stored + service-specific files</span></button>
       <button class="library-card" id="libraryPdfs"><strong>PDF library</strong><span>Stored + service-specific presentations</span></button>
+      <button class="library-card" id="libraryTemplates"><strong>Service Templates</strong><span>${serviceTemplates().length} saved template${serviceTemplates().length===1?'':'s'} · edit order and sync behaviour</span></button>
       <button class="library-card" id="librarySongStats"><strong>Song statistics</strong><span>Usage recorded when a service is downloaded or shared</span></button>
     </div>
     <p class="meta">Files stored in the OpenLP Planner library survive service deletion. Service-specific files belong only to their service.</p>`);
+  setSheetCloseAction(closeSheetSafely);
   $('#librarySongs').onclick=openSongLibrary;
   $('#libraryVideos').onclick=()=>openMediaLibrary('video');
   $('#libraryImages').onclick=()=>openMediaLibrary('images');
   $('#libraryPdfs').onclick=()=>openMediaLibrary('pdf');
+  $('#libraryTemplates').onclick=()=>openServiceTemplateManager('library');
   $('#librarySongStats').onclick=openSongStatistics;
 }
 
@@ -8637,6 +9954,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
     body.querySelectorAll('details[data-library-folder-key]').forEach(el=>el.addEventListener('toggle',()=>captureMediaLibraryView(type)));
 
     $('#backLibraryHub').onclick=openLibraryHub;
+    setSheetCloseAction(openLibraryHub);
     $('#addDirectLibraryMedia').onclick=()=>{captureMediaLibraryView(type);openDirectMediaLibraryUpload(type,()=>refreshMediaLibrary(type));};
 
     const updateBulkMove=()=>{

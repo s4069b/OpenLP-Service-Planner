@@ -10,7 +10,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "openlp-service-planner"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "607e3f14-9fa8-411b-9603-fe990cf0cf70"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
