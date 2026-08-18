@@ -3874,42 +3874,103 @@ a.ms.churchsuite-signin{
 .churchsuite-service-times small{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 
 
-/* v1.76.34 mobile service-header tidy-up */
+
+
+/* v1.76.36 mobile service header */
 @media(max-width:700px){
-  .service-head .meta{
-    display:flex;
-    align-items:baseline;
-    gap:6px;
+  .service-head{
+    display:grid;
+    grid-template-columns:minmax(0,1fr);
+    gap:0;
+    padding:14px 14px 13px;
+    margin:0 0 18px;
+    border:1px solid var(--line);
+    border-radius:16px;
+    background:var(--panel);
+  }
+
+  .service-head .title-line{
     min-width:0;
+  }
+
+  .service-head h1{
+    margin:0;
+    font-size:27px;
+    line-height:1.08;
+    letter-spacing:-.02em;
+  }
+
+  .service-head .eyebrow{
+    margin-bottom:5px;
+  }
+
+  .service-head .meta.service-theme-line{
+    display:flex;
+    align-items:center;
+    gap:7px;
+    min-width:0;
+    margin-top:8px;
+    color:var(--muted);
+    font-size:12px;
     white-space:nowrap;
   }
+
+  .service-theme-label{
+    flex:0 0 auto;
+  }
+
   #themeBtn{
     display:inline-block;
     min-width:0;
-    max-width:calc(100vw - 92px);
+    max-width:calc(100vw - 150px);
+    padding:0;
     overflow:hidden;
     text-overflow:ellipsis;
     white-space:nowrap;
     word-break:normal;
     overflow-wrap:normal;
-    vertical-align:bottom;
+    font-size:12px;
+    font-weight:650;
+    text-align:left;
   }
+
   .service-head-actions{
     display:grid;
-    grid-template-columns:minmax(0,1fr);
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:center;
     gap:7px;
-    width:min(100%,280px);
-    margin-top:16px;
-  }
-  #currentServiceTemplateBtn,
-  #saveCurrentServiceTemplateBtn{
     width:100%;
-    max-width:100%;
-    min-width:0;
+    max-width:none;
+    margin-top:12px;
+    padding-top:11px;
+    border-top:1px solid var(--line);
   }
+
   #currentServiceTemplateBtn{
+    width:100%;
+    max-width:none;
+    min-width:0;
+    min-height:34px;
+    padding:7px 9px;
     overflow:hidden;
     text-overflow:ellipsis;
     white-space:nowrap;
+    text-align:left;
+    font-size:12px;
+    border-radius:9px;
+  }
+
+  #saveCurrentServiceTemplateBtn{
+    width:auto;
+    min-width:auto;
+    min-height:34px;
+    padding:7px 9px;
+    font-size:11px;
+    border-radius:9px;
+    white-space:nowrap;
+  }
+
+  .readiness{
+    margin-top:14px;
   }
 }
