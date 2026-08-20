@@ -27,7 +27,7 @@
     "check:project": "npm run check:browser"
   },
   "devDependencies": {
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "wrangler": "4.122.0",
     "@types/node": "24.0.0"
   },
