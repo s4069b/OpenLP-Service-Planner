@@ -1,6 +1,6 @@
 # OpenLP Service Planner
 
-**Current release: v1.80.0**
+**Current release: v1.80.1**
 
 OpenLP Service Planner is a web application for planning church services and exporting them for OpenLP. It includes a shared Song Library, service templates, image/video/PDF/Bible items, OpenLP `.osz` export, optional ChurchSuite integration, and optional SongSelect-assisted song import workflows.
 
@@ -50,7 +50,7 @@ Fill in only the identity/integration values you intend to use in `.dev.vars`. D
    ```
 3. Edit `wrangler.toml`:
    - replace the all-zero placeholder `database_id` with your D1 database ID
-   - replace `REPLACE_WITH_YOUR_R2_BUCKET_NAME`
+   - change `bucket_name` if your R2 bucket uses a different name
 4. Apply migrations:
    ```bash
    npm run db:remote
@@ -140,8 +140,8 @@ These are covered by `.gitignore`.
 
 MIT. See [`LICENSE`](LICENSE).
 
-## Release notes — v1.80.0
+## Release notes — v1.80.1
 
-v1.80.0 consolidates the v1.76 development series into a GitHub-ready release. It includes the Home dashboard, current ChurchSuite sync/template workflows, Song Library comparison and reconciliation, SongSelect guided/file/browser import paths, side-by-side song merge with critical CCLI mismatch warnings, responsive UI refinements, and the self-hostable Edge/Chrome extension Options page.
+v1.80.1 is the GitHub-ready v1.80 release. It fixes the generic Cloudflare R2 binding so the public repository configuration remains syntactically valid for Wrangler CI. It otherwise consolidates the v1.76 development series into a GitHub-ready release. It includes the Home dashboard, current ChurchSuite sync/template workflows, Song Library comparison and reconciliation, SongSelect guided/file/browser import paths, side-by-side song merge with critical CCLI mismatch warnings, responsive UI refinements, and the self-hostable Edge/Chrome extension Options page.
 
 For older development notes and audits, see the files under [`docs/`](docs/).

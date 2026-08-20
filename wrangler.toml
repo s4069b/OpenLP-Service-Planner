@@ -15,4 +15,4 @@ migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "MEDIA"
-bucket_name = "REPLACE_WITH_YOUR_R2_BUCKET_NAME"
+bucket_name = "openlp-service-planner-media" # change if your deployment uses another bucket name
