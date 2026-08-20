@@ -127,6 +127,8 @@ const state=loadPlannerState();
 state.services=Array.isArray(state.services)?state.services:[];
 function normalisePlannerSettings(){
   state.settings=state.settings||{};
+  if(state.settings.songSelectEnabled===undefined)state.settings.songSelectEnabled=true;
+  if(state.settings.songSelectBridgeEnabled===undefined)state.settings.songSelectBridgeEnabled=false;
   if(state.settings.churchSuiteDefaultImportMode==='mapped')state.settings.churchSuiteDefaultImportMode='all';
   if(!state.settings.timeZone)state.settings.timeZone='Australia/Brisbane';
   if(!Array.isArray(state.settings.serviceTemplates))state.settings.serviceTemplates=[];
@@ -185,8 +187,8 @@ function importModeLabel(mode,templateId=''){
 }
 
 const DEFAULT_REGULAR_SERVICE_TYPES=[
-  {id:'morning-church',name:'Morning Church',weekday:0,defaultTheme:state.settings.defaultMorningTheme||'KSSS (am) white'},
-  {id:'nightchurch',name:'NightChurch',weekday:0,defaultTheme:state.settings.defaultNightTheme||'KSSS (am)'}
+  {id:'morning-church',name:'Morning Church',weekday:0,defaultTheme:state.settings.defaultMorningTheme||'KSSS (am) white',colour:'#4f6f8f'},
+  {id:'nightchurch',name:'NightChurch',weekday:0,defaultTheme:state.settings.defaultNightTheme||'KSSS (am)',colour:'#70658b'}
 ];
 function slugServiceType(value){
   const base=String(value||'service').trim().toLowerCase()
@@ -201,7 +203,8 @@ function regularServiceTypes(){
     id:String(x.id||slugServiceType(x.name||`service-${i+1}`)),
     name:String(x.name||`Regular service ${i+1}`),
     weekday:Number.isInteger(Number(x.weekday))?Number(x.weekday):0,
-    defaultTheme:String(x.defaultTheme||'Default')
+    defaultTheme:String(x.defaultTheme||'Default'),
+    colour:String(x.colour||'#4f6f8f')
   }));
 }
 function serviceTypeById(id){
@@ -329,7 +332,7 @@ function ensureRegularServiceTypeSetup(){
       let n=2;
       while(state.settings.regularServiceTypes.some(t=>String(t.id)===id))id=`${slugServiceType(name)}-${n++}`;
       const weekday=service.dateISO?new Date(`${service.dateISO}T12:00:00`).getDay():0;
-      const created={id,name,weekday,defaultTheme:String(service.theme||'Default')};
+      const created={id,name,weekday,defaultTheme:String(service.theme||'Default'),colour:'#4f6f8f'};
       state.settings.regularServiceTypes.push(created);
       service.kind='regular';
       service.serviceTypeId=id;
@@ -494,6 +497,7 @@ const UNDO_LIMIT=12;
 const undoStacks=new Map();
 const redoStacks=new Map();
 const undoBaselines=new Map();
+const editSessionBaselines=new Map();
 let applyingUndo=false;
 
 function undoCoreSnapshot(service){
@@ -504,12 +508,32 @@ function undoCoreSnapshot(service){
     theme:service.theme,
     published:!!service.published,
     kind:service.kind||'regular',
-    items:service.items||[],
-    churchSuiteOutOfSync:!!service.churchSuiteOutOfSync,
-    churchSuiteOutOfSyncReason:service.churchSuiteOutOfSyncReason||''
+    serviceTypeId:service.serviceTypeId||null,
+    serviceTypeName:service.serviceTypeName||'',
+    items:service.items||[]
   });
 }
 function undoSignature(snapshot){ return JSON.stringify(snapshot); }
+function rememberEditSessionBaseline(service=currentService(),force=false){
+  if(!service)return;
+  const key=String(service.id);
+  if(force||!editSessionBaselines.has(key))editSessionBaselines.set(key,undoCoreSnapshot(service));
+}
+function applyUndoSnapshot(service,snapshot,action){
+  if(!service||!snapshot)return;
+  service.title=snapshot.title;
+  service.dateISO=snapshot.dateISO;
+  service.date=snapshot.date;
+  service.theme=snapshot.theme;
+  service.published=snapshot.published;
+  service.kind=snapshot.kind;
+  service.serviceTypeId=snapshot.serviceTypeId||null;
+  service.serviceTypeName=snapshot.serviceTypeName||'';
+  service.items=structuredClone(snapshot.items||[]);
+  service.lastEditedAt=new Date().toISOString();
+  service.lastEditedBy=currentEditor();
+  service.lastEditedAction=action;
+}
 function resetUndoBaseline(service=currentService()){
   if(!service)return;
   const snap=undoCoreSnapshot(service);
@@ -524,6 +548,16 @@ function resetAllUndoBaselines(){
   }
   updateUndoButton();
 }
+function resetServiceEditHistory(service=currentService()){
+  if(!service)return;
+  const key=String(service.id);
+  undoStacks.set(key,[]);
+  redoStacks.set(key,[]);
+  const snap=undoCoreSnapshot(service);
+  undoBaselines.set(key,{snapshot:snap,signature:undoSignature(snap)});
+  editSessionBaselines.set(key,structuredClone(snap));
+  updateUndoButton();
+}
 function captureUndoChange(){
   if(applyingUndo)return;
   const service=currentService();
@@ -534,6 +568,8 @@ function captureUndoChange(){
   const baseline=undoBaselines.get(key);
   if(!baseline){
     undoBaselines.set(key,{snapshot:current,signature});
+    rememberEditSessionBaseline(service);
+    updateUndoButton();
     return;
   }
   if(signature===baseline.signature)return;
@@ -559,7 +595,26 @@ function updateUndoButton(){
   const redo=document.querySelector('#redoBtn');
   if(redo){
     redo.disabled=!redoCount;
+    redo.hidden=!redoCount;
     redo.title=redoCount?`Redo last undone change (${redoCount} available)`:'Nothing to redo';
+  }
+  if(undo)undo.hidden=!undoCount;
+  const historyWrap=document.querySelector('#footerHistoryWrap');
+  const historyMenu=document.querySelector('#footerHistoryMenu');
+  const historyTrigger=document.querySelector('#footerHistoryMenuBtn');
+  const sessionBaseline=service?editSessionBaselines.get(key):null;
+  const canReset=!!(service&&sessionBaseline&&undoSignature(undoCoreSnapshot(service))!==undoSignature(sessionBaseline));
+  const hasHistory=!!(undoCount||redoCount||canReset);
+  const reset=document.querySelector('#resetEditBtn');
+  if(reset)reset.hidden=!canReset;
+  if(historyWrap)historyWrap.hidden=!hasHistory||openLPOnlyView;
+  if(historyTrigger){
+    historyTrigger.title=undoCount&&redoCount?`Undo (${undoCount}) or redo (${redoCount})`:undoCount?`Undo last change (${undoCount} available)`:`Redo last change (${redoCount} available)`;
+    historyTrigger.setAttribute('aria-label',historyTrigger.title);
+  }
+  if(!hasHistory && historyMenu){
+    historyMenu.hidden=true;
+    if(historyTrigger)historyTrigger.setAttribute('aria-expanded','false');
   }
 }
 
@@ -568,9 +623,15 @@ async function undoLastChange(){
   if(!service)return;
   const key=String(service.id);
   const stack=undoStacks.get(key)||[];
-  const previous=stack.pop();
-  if(!previous)return;
   const currentSnapshot=undoCoreSnapshot(service);
+  // Older saves could leave duplicate/no-visible-change checkpoints in the
+  // stack. Skip them so one Undo always changes something the editor can see.
+  let previous=null;
+  while(stack.length){
+    const candidate=stack.pop();
+    if(undoSignature(candidate)!==undoSignature(currentSnapshot)){previous=candidate;break;}
+  }
+  if(!previous){undoStacks.set(key,stack);updateUndoButton();return;}
   const redo=redoStacks.get(key)||[];
   redo.push(currentSnapshot);
   while(redo.length>UNDO_LIMIT)redo.shift();
@@ -578,21 +639,11 @@ async function undoLastChange(){
   const beforeIds=new Set((service.items||[]).map(i=>String(i.id)));
   applyingUndo=true;
   try{
-    service.title=previous.title;
-    service.dateISO=previous.dateISO;
-    service.date=previous.date;
-    service.theme=previous.theme;
-    service.published=previous.published;
-    service.kind=previous.kind;
-    service.items=structuredClone(previous.items||[]);
-    service.churchSuiteOutOfSync=!!previous.churchSuiteOutOfSync;
-    service.churchSuiteOutOfSyncReason=previous.churchSuiteOutOfSyncReason||'';
-    service.lastEditedAt=new Date().toISOString();
-    service.lastEditedBy=currentEditor();
-    service.lastEditedAction='undid last change';
+    applyUndoSnapshot(service,previous,'undid last change');
     undoStacks.set(key,stack);
     resetUndoBaseline(service);
     persistPlanner();
+    render();
 
     if(remoteAvailable){
       const restoredIds=new Set(service.items.map(i=>String(i.id)));
@@ -616,10 +667,15 @@ async function redoLastChange(){
   if(!service)return;
   const key=String(service.id);
   const redo=redoStacks.get(key)||[];
-  const next=redo.pop();
-  if(!next)return;
-
   const currentSnapshot=undoCoreSnapshot(service);
+  // As with Undo, skip duplicate checkpoints so the first Redo is visible.
+  let next=null;
+  while(redo.length){
+    const candidate=redo.pop();
+    if(undoSignature(candidate)!==undoSignature(currentSnapshot)){next=candidate;break;}
+  }
+  if(!next){redoStacks.set(key,redo);updateUndoButton();return;}
+
   const undo=undoStacks.get(key)||[];
   undo.push(currentSnapshot);
   while(undo.length>UNDO_LIMIT)undo.shift();
@@ -629,20 +685,10 @@ async function redoLastChange(){
   const beforeIds=new Set((service.items||[]).map(i=>String(i.id)));
   applyingUndo=true;
   try{
-    service.title=next.title;
-    service.dateISO=next.dateISO;
-    service.date=next.date;
-    service.theme=next.theme;
-    service.published=next.published;
-    service.kind=next.kind;
-    service.items=structuredClone(next.items||[]);
-    service.churchSuiteOutOfSync=!!next.churchSuiteOutOfSync;
-    service.churchSuiteOutOfSyncReason=next.churchSuiteOutOfSyncReason||'';
-    service.lastEditedAt=new Date().toISOString();
-    service.lastEditedBy=currentEditor();
-    service.lastEditedAction='redid last change';
+    applyUndoSnapshot(service,next,'redid last change');
     resetUndoBaseline(service);
     persistPlanner();
+    render();
 
     if(remoteAvailable){
       const restoredIds=new Set(service.items.map(i=>String(i.id)));
@@ -660,6 +706,35 @@ async function redoLastChange(){
   render();
 }
 
+
+async function resetThisEdit(){
+  const service=currentService();
+  if(!service)return;
+  const key=String(service.id);
+  const baseline=editSessionBaselines.get(key);
+  if(!baseline)return;
+  const current=undoCoreSnapshot(service);
+  if(undoSignature(current)===undoSignature(baseline))return;
+  const beforeIds=new Set((service.items||[]).map(i=>String(i.id)));
+  applyingUndo=true;
+  try{
+    applyUndoSnapshot(service,baseline,'reset this edit');
+    undoStacks.set(key,[]);
+    redoStacks.set(key,[]);
+    resetUndoBaseline(service);
+    persistPlanner();
+    render();
+    if(remoteAvailable){
+      const restoredIds=new Set(service.items.map(i=>String(i.id)));
+      for(const oldId of beforeIds){if(!restoredIds.has(oldId))await deleteRemoteItem(service.id,oldId);}
+      await saveServiceMeta();
+      for(const item of service.items)await saveServiceItem(item);
+      await saveItemOrder();
+      appendAudit('reset this edit');
+    }
+  }finally{applyingUndo=false;}
+  render();
+}
 
 resetAllUndoBaselines();
 
@@ -741,157 +816,271 @@ async function apiFetch(path, options={}){
   }
   if(!response.ok){
     const data=await response.json().catch(()=>({}));
-    throw new Error(data.error||`Request failed ${response.status}`);
+    const error=new Error(data.error||`Request failed ${response.status}`);
+    error.status=response.status;
+    error.data=data;
+    throw error;
   }
   return response.json();
 }
 
-async function saveServiceItem(item){
-  if(!remoteAvailable) return;
-  const service=currentService();
-  try{
-    await apiFetch(`/api/services/${encodeURIComponent(service.id)}/items/${encodeURIComponent(item.id)}`,{
-      method:'PUT',
-      body:JSON.stringify({item})
-    });
-  }catch(err){
-    console.warn(err);
-  }
+const serviceMutationChains=new Map();
+let serviceConflictShowing=false;
+let pendingServiceConflict=null;
+function serviceById(serviceId){return state.services.find(x=>String(x.id)===String(serviceId));}
+async function fetchLatestRemoteService(serviceId){
+  const data=await apiFetch('/api/bootstrap',{cache:'no-store'});
+  return (data.services||[]).find(x=>String(x.id)===String(serviceId))||null;
 }
-
-async function saveServiceItemFor(serviceId,item){
-  if(!remoteAvailable) return;
+async function forceLocalServiceVersion(service,detail={}){
+  if(!service||!remoteAvailable)return;
+  const remote=await fetchLatestRemoteService(service.id);
+  if(!remote)throw new Error('The latest shared service could not be loaded.');
+  const latestRevision=Number(detail.revision??remote.revision??0);
+  service.lastEditedAt=new Date().toISOString();
+  service.lastEditedBy=currentEditor();
+  service.lastEditedAction='overrode newer shared version';
+  const result=await apiFetch(`/api/services/${encodeURIComponent(service.id)}/force-replace`,{
+    method:'POST',
+    body:JSON.stringify({baseRevision:latestRevision,service})
+  });
+  if(result&&Number.isFinite(Number(result.revision)))service.revision=Number(result.revision);
   try{
-    await apiFetch(`/api/services/${encodeURIComponent(serviceId)}/items/${encodeURIComponent(item.id)}`,{
-      method:'PUT',
-      body:JSON.stringify({item})
-    });
-  }catch(err){
-    console.warn(err);
-  }
-}
-
-async function saveServiceMeta(){
-  if(!remoteAvailable) return;
-  const s=currentService();
-  try{
-    await apiFetch(`/api/services/${encodeURIComponent(s.id)}`,{
-      method:'PUT',
-      body:JSON.stringify({
-        service:{
-          id:s.id,title:s.title,dateISO:s.dateISO,date:s.date,theme:s.theme,
-          published:!!s.published,kind:s.kind||'regular',
-          downloadedForDeviceAt:s.downloadedForDeviceAt||null,
-          downloadedSnapshot:s.downloadedSnapshot||null,
-          lastEditedAt:s.lastEditedAt||null,
-          lastEditedBy:s.lastEditedBy||null,
-          lastEditedAction:s.lastEditedAction||null,
-          churchSuitePlanId:s.churchSuitePlanId??null,
-          churchSuitePlanIdentifier:s.churchSuitePlanIdentifier||null,
-          churchSuitePlanUrl:s.churchSuitePlanUrl||null,
-          churchSuiteLastUpdated:s.churchSuiteLastUpdated||null,
-          churchSuiteLastSynced:s.churchSuiteLastSynced||null,
-          churchSuiteImportMode:s.churchSuiteImportMode||null,
-          serviceTemplateId:s.serviceTemplateId||null,
-          churchSuiteOutOfSync:!!s.churchSuiteOutOfSync,
-          churchSuiteOutOfSyncReason:s.churchSuiteOutOfSyncReason||null
-        }
-      })
-    });
-  }catch(err){
-    console.warn(err);
-  }
-}
-
-async function appendAudit(action, detail='',scope='service'){
-  if(!remoteAvailable || scope==='library') return;
-  const s=currentService();
-  if(!s?.id)return;
-  try{
-    await apiFetch(`/api/services/${encodeURIComponent(s.id)}/audit`,{
+    await apiFetch(`/api/services/${encodeURIComponent(service.id)}/audit`,{
       method:'POST',
-      body:JSON.stringify({actor:currentEditor(),action,detail})
+      body:JSON.stringify({action:'overrode newer shared version',detail:'Replaced a newer shared service revision with this editor\'s local version.'})
     });
+  }catch(auditError){
+    console.warn('Override succeeded but audit logging failed.',auditError);
+  }
+}
+function showServiceConflict(service,detail={}){
+  if(serviceConflictShowing)return;
+  serviceConflictShowing=true;
+  pendingServiceConflict={serviceId:String(service?.id||''),detail};
+  const who=detail.lastEditedBy?`<strong>${esc(detail.lastEditedBy)}</strong>`:'another editor';
+  const when=detail.lastEditedAt?` at <strong>${esc(formatActivityTime(detail.lastEditedAt))}</strong>`:'';
+  const action=detail.lastEditedAction?`<p class="muted">Their latest action: ${esc(detail.lastEditedAction)}</p>`:'';
+  openSheet(`<h2>Service changed elsewhere</h2>
+    <div class="warning-card"><strong>Your copy is out of date.</strong><p>Most recent edit by ${who}${when}. Your attempted change was not written over that newer version.</p>${action}</div>
+    <p><strong>Reload latest</strong> is the safe choice. It replaces your local copy with the shared version and clears Undo, Redo and Reset-this-edit history.</p>
+    <p class="muted">If you are certain your current copy should replace the newer shared version, you can override it. That action requires a second click.</p>
+    <div class="sheet-actions"><button class="secondary" id="keepStaleService">Keep viewing</button><button class="danger" id="overrideConflictedService">Use my version anyway</button><button class="primary" id="reloadConflictedService">Reload latest</button></div>`);
+  const finish=()=>{serviceConflictShowing=false;pendingServiceConflict=null;};
+  $('#keepStaleService').onclick=()=>{finish();closeSheetSafely();};
+  $('#reloadConflictedService').onclick=async()=>{
+    const serviceId=service?.id;
+    await refreshSharedPlannerState();
+    const fresh=serviceId?serviceById(serviceId):null;
+    if(fresh){
+      state.activeServiceId=serviceId;
+      resetServiceEditHistory(fresh);
+    }else{
+      resetAllUndoBaselines();
+    }
+    finish();closeSheetSafely();render();
+  };
+  const override=$('#overrideConflictedService');
+  let overrideArmed=false,overrideTimer=null;
+  override.onclick=async()=>{
+    if(!overrideArmed){
+      overrideArmed=true;
+      override.textContent='Click again to replace latest';
+      override.classList.add('solid-danger');
+      clearTimeout(overrideTimer);
+      overrideTimer=setTimeout(()=>{
+        overrideArmed=false;
+        override.textContent='Use my version anyway';
+        override.classList.remove('solid-danger');
+      },4000);
+      return;
+    }
+    clearTimeout(overrideTimer);
+    override.disabled=true;
+    override.textContent='Replacing…';
+    try{
+      await forceLocalServiceVersion(service,detail);
+      finish();closeSheetSafely();render();
+    }catch(err){
+      override.disabled=false;
+      overrideArmed=false;
+      override.classList.remove('solid-danger');
+      override.textContent='Use my version anyway';
+      await appAlert(err?.message||'Could not replace the latest shared version.',{title:'Override failed'});
+    }
+  };
+}
+function queueServiceMutation(serviceId,work){
+  const key=String(serviceId);
+  const previous=serviceMutationChains.get(key)||Promise.resolve();
+  const next=previous.catch(()=>{}).then(async()=>{
+    const service=serviceById(key);
+    if(!service)return;
+    try{
+      const result=await work(service,Number(service.revision||0));
+      if(result && Number.isFinite(Number(result.revision)))service.revision=Number(result.revision);
+      return result;
+    }catch(err){
+      if(err?.status===409){showServiceConflict(service,err.data||{});return;}
+      throw err;
+    }
+  });
+  const tracked=next.finally(()=>{if(serviceMutationChains.get(key)===tracked)serviceMutationChains.delete(key);});
+  serviceMutationChains.set(key,tracked);
+  return tracked;
+}
+
+
+
+async function refreshSharedPlannerState(){
+  if(!remoteAvailable)return false;
+  try{
+    const data=await apiFetch('/api/bootstrap',{cache:'no-store'});
+    if(!(data?.initialized||Array.isArray(data?.services)))return false;
+    const activeId=String(state.activeServiceId||'');
+    state.services=Array.isArray(data.services)?data.services:[];
+    state.settings=data.settings||state.settings;
+    normalisePlannerSettings();
+    ensureRegularServiceTypeSetup();
+    state.activeServiceId=state.services.some(x=>String(x.id)===activeId)
+      ?activeId
+      :(data.activeServiceId||state.services[0]?.id||'');
+    return true;
   }catch(err){
-    console.warn(err);
+    console.warn('Could not refresh shared planner state',err);
+    return false;
   }
 }
 
-async function saveActiveServiceRemote(serviceId){
-  if(!remoteAvailable||!serviceId)return;
-  try{
-    await apiFetch('/api/active-service',{
-      method:'PUT',
-      body:JSON.stringify({serviceId:String(serviceId)})
-    });
-  }catch(err){
-    console.warn('Could not save active service.',err);
+function appendAudit(action,detail=''){
+  const service=currentService();
+  if(!service)return;
+  const actor=currentEditor();
+  const actionText=String(action||'changed');
+  const detailText=String(detail||'');
+  service.activity=Array.isArray(service.activity)?service.activity:[];
+  service.activity.unshift([actor,detailText?`${actionText}: ${detailText}`:actionText,new Date().toISOString()]);
+  if(service.activity.length>50)service.activity.length=50;
+  persistPlanner();
+  if(remoteAvailable){
+    void apiFetch(`/api/services/${encodeURIComponent(service.id)}/audit`,{
+      method:'POST',
+      body:JSON.stringify({action:actionText,detail:detailText})
+    }).catch(err=>console.warn('Activity logging failed.',err));
   }
 }
 
 async function createRemoteService(service){
-  if(!remoteAvailable) return;
-  try{
-    await apiFetch('/api/services',{
+  if(!remoteAvailable||!service)return {ok:true,localOnly:true};
+  // Services loaded from the shared planner carry a revision. Full writes of
+  // those services must remain conflict-checked; only genuinely new services
+  // use the creation endpoint.
+  if(service.revision!==undefined&&service.revision!==null){
+    return queueServiceMutation(service.id,async(_service,baseRevision)=>apiFetch(`/api/services/${encodeURIComponent(service.id)}/force-replace`,{
       method:'POST',
-      body:JSON.stringify({service})
-    });
-  }catch(err){
-    console.warn(err);
+      body:JSON.stringify({baseRevision,service})
+    }));
   }
+  const result=await apiFetch('/api/services',{
+    method:'POST',
+    body:JSON.stringify({service})
+  });
+  if(result&&Number.isFinite(Number(result.revision)))service.revision=Number(result.revision);
+  else if(service.revision===undefined)service.revision=0;
+  return result;
 }
 
-
 async function deleteRemoteService(serviceId){
-  if(!remoteAvailable)return {ok:true,localOnly:true,deleted:[String(serviceId)]};
+  if(!remoteAvailable)return {ok:true,deleted:[String(serviceId)],activeServiceId:null,localOnly:true};
   return apiFetch(`/api/services/${encodeURIComponent(serviceId)}`,{method:'DELETE'});
 }
 
 async function deleteRemoteServices(serviceIds){
   const ids=[...new Set((serviceIds||[]).map(String).filter(Boolean))];
-  if(!ids.length)return {ok:true,deleted:[]};
-  if(!remoteAvailable)return {ok:true,localOnly:true,deleted:ids};
+  if(!remoteAvailable)return {ok:true,deleted:ids,activeServiceId:null,localOnly:true};
   return apiFetch('/api/services/bulk-delete',{
     method:'POST',
     body:JSON.stringify({serviceIds:ids})
   });
 }
 
-async function removeServicesAfterConfirmedDelete(serviceIds,serverResult=null){
+async function removeServicesAfterConfirmedDelete(serviceIds,result={}){
   const ids=new Set((serviceIds||[]).map(String));
-  state.services=state.services.filter(service=>!ids.has(String(service.id)));
-  state.activeServiceId=serverResult?.activeServiceId||(
-    ids.has(String(state.activeServiceId)) ? (state.services[0]?.id||'') : state.activeServiceId
-  );
-  if(!state.services.length){
-    state.activeServiceId='';
-    rememberLastScreen('services');
+  state.services=(state.services||[]).filter(service=>!ids.has(String(service.id)));
+  for(const id of ids){
+    undoStacks.delete(id);redoStacks.delete(id);undoBaselines.delete(id);editSessionBaselines.delete(id);
+    serviceMutationChains.delete(id);
   }
+  const requested=String(result?.activeServiceId||'');
+  if(requested&&state.services.some(service=>String(service.id)===requested))state.activeServiceId=requested;
+  else if(!state.services.some(service=>String(service.id)===String(state.activeServiceId||'')))state.activeServiceId=state.services[0]?.id||'';
   persistPlanner();
+  updateUndoButton();
+}
+
+async function saveServiceItem(item){
+  if(!remoteAvailable) return;
+  const service=currentService();
+  return queueServiceMutation(service.id,async(_service,baseRevision)=>apiFetch(`/api/services/${encodeURIComponent(service.id)}/items/${encodeURIComponent(item.id)}`,{
+    method:'PUT',
+    body:JSON.stringify({item,baseRevision})
+  }));
+}
+
+async function saveServiceItemFor(serviceId,item){
+  if(!remoteAvailable) return;
+  return queueServiceMutation(serviceId,async(_service,baseRevision)=>apiFetch(`/api/services/${encodeURIComponent(serviceId)}/items/${encodeURIComponent(item.id)}`,{
+    method:'PUT',
+    body:JSON.stringify({item,baseRevision})
+  }));
+}
+
+async function saveServiceMeta(){
+  if(!remoteAvailable) return;
+  const s=currentService();
+  return queueServiceMutation(s.id,async(_service,baseRevision)=>apiFetch(`/api/services/${encodeURIComponent(s.id)}`,{
+    method:'PUT',
+    body:JSON.stringify({
+      baseRevision,
+      service:{
+        id:s.id,title:s.title,dateISO:s.dateISO,date:s.date,theme:s.theme,
+        published:!!s.published,kind:s.kind||'regular',
+        serviceTypeId:s.serviceTypeId||null,
+        serviceTypeName:s.serviceTypeName||null,
+        downloadedForDeviceAt:s.downloadedForDeviceAt||null,
+        downloadedSnapshot:s.downloadedSnapshot||null,
+        lastEditedAt:s.lastEditedAt||null,
+        lastEditedBy:s.lastEditedBy||null,
+        lastEditedAction:s.lastEditedAction||null,
+        churchSuitePlanId:s.churchSuitePlanId??null,
+        churchSuitePlanIdentifier:s.churchSuitePlanIdentifier||null,
+        churchSuitePlanUrl:s.churchSuitePlanUrl||null,
+        churchSuiteLastUpdated:s.churchSuiteLastUpdated||null,
+        churchSuiteLastSynced:s.churchSuiteLastSynced||null,
+        churchSuiteImportMode:s.churchSuiteImportMode||null,
+        serviceTemplateId:s.serviceTemplateId||null,
+        churchSuiteOutOfSync:!!s.churchSuiteOutOfSync,
+        churchSuiteOutOfSyncReason:s.churchSuiteOutOfSyncReason||null
+      }
+    })
+  }));
 }
 
 async function deleteRemoteItem(serviceId,itemId){
   if(!remoteAvailable) return;
-  try{
-    await apiFetch(`/api/services/${encodeURIComponent(serviceId)}/items/${encodeURIComponent(itemId)}`,{
-      method:'DELETE'
-    });
-  }catch(err){
-    console.warn(err);
-  }
+  return queueServiceMutation(serviceId,async(_service,baseRevision)=>apiFetch(`/api/services/${encodeURIComponent(serviceId)}/items/${encodeURIComponent(itemId)}`,{
+    method:'DELETE',
+    body:JSON.stringify({baseRevision})
+  }));
 }
 
 async function saveItemOrder(){
   if(!remoteAvailable) return;
   const s=currentService();
-  try{
-    await apiFetch(`/api/services/${encodeURIComponent(s.id)}/order`,{
-      method:'PUT',
-      body:JSON.stringify({itemIds:s.items.map(x=>String(x.id))})
-    });
-  }catch(err){
-    console.warn(err);
-  }
+  return queueServiceMutation(s.id,async(_service,baseRevision)=>apiFetch(`/api/services/${encodeURIComponent(s.id)}/order`,{
+    method:'PUT',
+    body:JSON.stringify({itemIds:s.items.map(x=>String(x.id)),baseRevision})
+  }));
 }
 
 
@@ -1142,7 +1331,7 @@ async function bootstrapRemote(){
     if(!response.ok){
       // Hosted failures must not expose locally cached planner state.
       if(location.protocol==='https:' || location.hostname!=='localhost'){
-        document.body.innerHTML='<main style="max-width:560px;margin:12vh auto;padding:24px;font-family:-apple-system,BlinkMacSystemFont,Helvetica Neue,Arial,sans-serif"><h1>OpenLP Service Planner</h1><p>The planner could not verify your session.</p><p><a href="/login">Return to sign in</a></p></main>';
+        document.body.innerHTML='<main style="max-width:560px;margin:12vh auto;padding:24px;font-family:-apple-system,BlinkMacSystemFont,Helvetica Neue,Arial,sans-serif"><h1>OpenLP Service Planner</h1><p>The planner could not load its shared data.</p><p><button type="button" onclick="location.reload()">Try again</button> &nbsp; <a href="/login">Return to sign in</a></p></main>';
         return;
       }
       await loadSongLibrary();
@@ -1565,11 +1754,145 @@ function applyProjectorState(){
   }
 }
 
+
+function closeAppMenus(except=null){
+  document.querySelectorAll('.app-menu-panel').forEach(panel=>{
+    if(panel===except)return;
+    panel.hidden=true;
+    const trigger=document.querySelector(`[aria-controls="${CSS.escape(panel.id)}"]`);
+    if(trigger)trigger.setAttribute('aria-expanded','false');
+  });
+}
+function setupAppMenus(){
+  document.querySelectorAll('.menu-trigger[aria-controls]').forEach(trigger=>{
+    if(trigger.dataset.menuWired)return;
+    trigger.dataset.menuWired='1';
+    trigger.addEventListener('click',e=>{
+      e.stopPropagation();
+      const panel=document.getElementById(trigger.getAttribute('aria-controls'));
+      if(!panel)return;
+      const opening=panel.hidden;
+      closeAppMenus(panel);
+      panel.hidden=!opening;
+      trigger.setAttribute('aria-expanded',opening?'true':'false');
+    });
+  });
+  document.querySelectorAll('.app-menu-panel').forEach(panel=>{
+    if(panel.dataset.menuWired)return;
+    panel.dataset.menuWired='1';
+    panel.addEventListener('click',e=>{
+      if(e.target.closest('button,a'))setTimeout(()=>closeAppMenus(),0);
+    });
+  });
+}
+function flashTransientLabel(el,text,ms=2600){
+  if(!el)return;
+  const old=el.querySelector('.transient-label-text');
+  if(old)old.textContent=text;
+  el.classList.add('show-label');
+  clearTimeout(el._labelTimer);
+  el._labelTimer=setTimeout(()=>el.classList.remove('show-label'),ms);
+}
+function wireTransientLabels(root=document){
+  root.querySelectorAll?.('[data-transient-label]').forEach(el=>{
+    if(el.dataset.transientWired)return;
+    el.dataset.transientWired='1';
+    el.addEventListener('click',e=>{
+      if(el.matches('a')||el.dataset.twoStepAction==='1')return;
+      e.stopPropagation();
+      flashTransientLabel(el,el.dataset.transientLabel||el.getAttribute('aria-label')||el.title||'');
+    });
+  });
+}
+function serviceDateParts(service){
+  const iso=String(service?.dateISO||'');
+  const d=iso?new Date(`${iso}T12:00:00`):null;
+  if(!d||Number.isNaN(d.getTime()))return {day:'',date:String(service?.date||''),year:''};
+  return {
+    day:d.toLocaleDateString('en-AU',{weekday:'long'}),
+    date:d.toLocaleDateString('en-AU',{day:'numeric',month:'short'}),
+    year:d.toLocaleDateString('en-AU',{year:'numeric'})
+  };
+}
+function serviceTypeColour(service){
+  if(service?.kind==='event')return '#8a8a8f';
+  const type=serviceTypeById(service?.serviceTypeId);
+  if(type?.colour)return type.colour;
+  const key=String(service?.serviceTypeId||service?.serviceTypeName||service?.title||'service');
+  const palette=['#4f6f8f','#6d7f54','#8a6748','#70658b','#4f7f79','#8a5f67'];
+  let n=0;for(const ch of key)n=(n*31+ch.charCodeAt(0))>>>0;
+  return palette[n%palette.length];
+}
+function serviceTypeIcon(service){
+  const label=service?.kind==='event'?'One-off event':(service?.serviceTypeName||'Regular service');
+  return `<button type="button" class="service-type-dot transient-label service-type-edit-action" style="--service-type-colour:${esc(serviceTypeColour(service))}" data-two-step-action="1" data-service-type-edit="${esc(service?.id||'')}" data-transient-label="${esc(label)} · tap again to change" aria-label="${esc(label)}; tap twice to change service type" title="${esc(label)}"><span class="transient-label-text">${esc(label)} · tap again to change</span></button>`;
+}
+async function openServiceTypeEditor(service){
+  if(!service)return;
+  const current=service.kind==='event'?'__oneoff__':String(service.serviceTypeId||'');
+  openSheet(`<h2>Service type</h2>
+    <p class="meta">Change how this existing service is classified. Regular service types use the colour and defaults configured in Settings.</p>
+    <div class="field"><label>Service type</label><select id="editExistingServiceType">
+      <option value="__oneoff__" ${current==='__oneoff__'?'selected':''}>One-off service</option>
+      ${regularServiceTypes().map(t=>`<option value="${esc(t.id)}" ${current===String(t.id)?'selected':''}>${esc(t.name)}</option>`).join('')}
+    </select></div>
+    <div class="sheet-actions"><button class="secondary" id="cancelExistingServiceType">Cancel</button><button class="primary" id="saveExistingServiceType">Save</button></div>`);
+  $('#cancelExistingServiceType').onclick=()=>sheet.close();
+  $('#saveExistingServiceType').onclick=async()=>{
+    const value=$('#editExistingServiceType').value;
+    if(value==='__oneoff__'){
+      service.kind='event';service.serviceTypeId=null;service.serviceTypeName='One-off services';
+    }else{
+      const type=serviceTypeById(value);if(!type)return;
+      service.kind='regular';service.serviceTypeId=type.id;service.serviceTypeName=type.name;
+    }
+    service.lastEditedAt=new Date().toISOString();service.lastEditedBy=currentEditor();service.lastEditedAction='changed service type';
+    persistPlanner();
+    const previousActive=state.activeServiceId;state.activeServiceId=service.id;
+    await saveServiceMeta();
+    await appendAudit('changed service type',service.serviceTypeName||'One-off service');
+    state.activeServiceId=previousActive;
+    sheet.close();
+    renderServicesPage();
+  };
+}
+function itemStatusHtml(item){
+  const projected=!!item.projected;
+  const ready=!!item.ready;
+  const label=projected?(ready?'Ready':'Missing'):'Run sheet only';
+  const icon=projected?(ready?'✓':'!'):'≡';
+  const cls=projected?(ready?'ready':'missing'):'plan';
+  return `<button type="button" class="status status-icon ${cls} transient-label" data-transient-label="${esc(label)}" aria-label="${esc(label)}" title="${esc(label)}"><span aria-hidden="true">${icon}</span><span class="transient-label-text">${esc(label)}</span></button>`;
+}
+function itemSubtleFlagsHtml(item){
+  const flags=[];
+  if(item.projected)flags.push(['▣','Projection']);
+  if(item.templateProtected)flags.push(['◇','Template item']);
+  else if(churchSuiteEnabled()&&item.retainOnChurchSuiteSync)flags.push(['⌁','Kept on ChurchSuite sync']);
+  if(churchSuiteEnabled()&&item.churchSuiteSourceId)flags.push(['CS','From ChurchSuite']);
+  if(churchSuiteEnabled()&&item.churchSuiteExcludedFromLastSync)flags.push(['−','Not included in latest ChurchSuite sync']);
+  if(churchSuiteEnabled()&&item.type==='song'&&item.churchSuiteWritePending)flags.push(['↻','ChurchSuite update pending']);
+  return flags.map(([icon,label])=>`<span class="item-flag transient-label" data-transient-label="${esc(label)}" tabindex="0" aria-label="${esc(label)}" title="${esc(label)}"><span aria-hidden="true">${icon}</span><span class="transient-label-text">${esc(label)}</span></span>`).join('');
+}
+function imageItemVisualHtml(item){
+  if(!['images','sermon-images'].includes(item.type))return '';
+  const first=(item.media||[])[0];
+  const label=item.type==='sermon-images'?'Sermon images':'Images';
+  if(!first?.id)return `<span class="item-image-empty" title="${label}">▧</span>`;
+  const autoplay=item.type==='images'&&item.autoplay==='loop';
+  return `<span class="item-image-thumb" title="${esc(label)}"><img src="/api/media/${encodeURIComponent(first.id)}" alt=""><span class="image-count">${(item.media||[]).length}</span>${autoplay?'<span class="autoplay-overlay" title="Auto-play loop">↻</span>':''}</span>`;
+}
 function renderHeader(){
   const s=currentService();
   $('#serviceDate').textContent=s.date;
   $('#serviceTitle').textContent=s.title;
-  $('#themeBtn').textContent=s.theme;
+  const themeBtn=$('#themeBtn');
+  if(themeBtn){themeBtn.dataset.transientLabel=`Theme: ${s.theme} · tap again to change`;themeBtn.title=`OpenLP theme: ${s.theme}`;themeBtn.setAttribute('aria-label',`OpenLP theme: ${s.theme}; tap twice to change`);}
+  const context=$('#plannerContextLabel');
+  if(context)context.textContent=churchSuiteEnabled()?'Service Planner · ChurchSuite':'Service Planner';
+  document.body.classList.toggle('churchsuite-mode',churchSuiteEnabled());
+  const headerSettings=$('#headerSettingsBtn');
+  if(headerSettings)headerSettings.hidden=Number(authenticatedUser?.accessLevel||3)<3;
   document.title=`${s.title} · OpenLP Service Planner`;
   const last=$('#lastEdited');
   if(last){
@@ -1603,25 +1926,22 @@ function renderHeader(){
     plannerSync.hidden=!(churchSuiteEnabled()&&(s.churchSuitePlanId||s.churchSuitePlanUrl));
     plannerSync.classList.toggle('sync-attention',!!s.churchSuiteOutOfSync);
   }
-  // View CS Plan is not a permanent footer control. Create it only when this
-  // specific service has a validated, saved ChurchSuite Plan Page URL.
-  const footerSync=$('#plannerSyncChurchSuiteBtn');
-  let plannerViewPlan=$('#plannerViewChurchSuiteBtn');
+  const csActions=$('#churchSuiteActionsWrap');
+  if(csActions)csActions.hidden=!churchSuiteEnabled();
+  const plannerViewPlan=$('#plannerViewChurchSuiteBtn');
   const planUrl=churchSuiteEnabled()?actualChurchSuitePlanUrl(s):'';
-  if(planUrl){
-    if(!plannerViewPlan){
-      plannerViewPlan=document.createElement('a');
-      plannerViewPlan.id='plannerViewChurchSuiteBtn';
-      plannerViewPlan.className='secondary footer-churchsuite-link';
-      plannerViewPlan.target='_blank';
-      plannerViewPlan.rel='noopener';
-      plannerViewPlan.textContent='View CS Plan ↗';
-      footerSync?.insertAdjacentElement('afterend',plannerViewPlan);
-    }
-    plannerViewPlan.href=planUrl;
-  }else if(plannerViewPlan){
-    plannerViewPlan.remove();
-  }
+  if(plannerViewPlan){plannerViewPlan.hidden=!planUrl;if(planUrl)plannerViewPlan.href=planUrl;}
+  const openLPBtn=$('#openLPViewBtn');
+  if(openLPBtn)openLPBtn.hidden=!churchSuiteEnabled();
+  const openLPReturn=$('#openLPReturnBtn');
+  if(openLPReturn)openLPReturn.hidden=!openLPOnlyView;
+  if($('#footerPlanStack'))$('#footerPlanStack').hidden=openLPOnlyView;
+  if($('#plannerServiceListBtn'))$('#plannerServiceListBtn').hidden=openLPOnlyView;
+  if($('#plannerHomeBtn'))$('#plannerHomeBtn').hidden=openLPOnlyView;
+  if($('#plannerFooterNavPair'))$('#plannerFooterNavPair').hidden=openLPOnlyView;
+  if($('#plannerActionsMenuBtn'))$('#plannerActionsMenuBtn').hidden=openLPOnlyView;
+  if($('#churchSuiteActionsWrap'))$('#churchSuiteActionsWrap').hidden=openLPOnlyView||!churchSuiteEnabled();
+  if($('#footerHistoryWrap'))$('#footerHistoryWrap').hidden=openLPOnlyView;
   const missingPlanLink=$('#churchSuitePlanLinkMissing');
   if(missingPlanLink){
     missingPlanLink.hidden=!(churchSuiteEnabled()&&!!s.churchSuitePlanIdentifier&&!actualChurchSuitePlanUrl(s));
@@ -1630,6 +1950,19 @@ function renderHeader(){
 }
 
 let openLPOnlyView=false;
+
+function serviceItemPersonHtml(item){
+  if(!item)return '';
+  const people=Array.isArray(item.churchSuitePeople)?item.churchSuitePeople:[];
+  if(item.type==='song' && churchSuitePeopleImportEnabled() && people.length){
+    const names=people.map(p=>String(p?.name||[p?.firstName,p?.lastName].filter(Boolean).join(' ')||'').trim()).filter(Boolean);
+    const first=names.slice(0,2).join(', ');
+    const rest=names.slice(2);
+    if(!first)return '';
+    return `<span class="person song-team-person">${esc(first)}${rest.length?` <button type="button" class="song-team-more transient-label" data-transient-label="${esc(rest.join(', '))}" aria-label="Show ${rest.length} more team member${rest.length===1?'':'s'}">+${rest.length}<span class="transient-label-text">${esc(rest.join(', '))}</span></button>`:''}</span>`;
+  }
+  return item.person?`<span class="person">${esc(item.person)}</span>`:'';
+}
 
 function render(){
   const service=currentService();
@@ -1648,6 +1981,7 @@ function render(){
     return;
   }
 
+  rememberEditSessionBaseline(service);
   renderHeader();
   persistPlanner();
   const visibleItems=openLPOnlyView?state.items.filter(x=>x.projected):state.items;
@@ -1656,10 +1990,11 @@ function render(){
     <div>
       <div class="item-title">${esc(x.title)}</div>
       <div class="item-sub">
-        ${x.person?`<span class="person">${esc(x.person)}</span>`:''}
-        ${serviceItemDetailForDisplay(x)?`<span>${esc(serviceItemDetailForDisplay(x))}</span>`:''}
+        ${serviceItemPersonHtml(x)}
+        ${imageItemVisualHtml(x)}
+        ${!['images','sermon-images'].includes(x.type)&&serviceItemDetailForDisplay(x)?`<span>${esc(serviceItemDetailForDisplay(x))}</span>`:''}
         ${x.type==='song'&&x.musicNote?`<span class="music-note">♪ ${esc(x.musicNote)}</span>`:''}
-        ${x.projected?'<span class="projection-chip">Projection</span>':'<span>Run sheet only</span>'}
+        <span class="item-flags">${itemSubtleFlagsHtml(x)}</span>
         ${(x.ignoreImages||x.ignoreVideo||x.ignoreBible)?'<span class="no-attachments-chip">No attachments</span>':''}
         ${x.type==='images'&&x.churchSuiteSourceId&&!x.ready?`
           <label class="inline-ignore-images" title="Keep this item but do not require images">
@@ -1679,28 +2014,27 @@ function render(){
             <span>Ignore Bible</span>
           </label>
         `:''}
-        ${churchSuiteEnabled()&&x.type==='song'&&x.churchSuiteWritePending?`<span class="churchsuite-pending-chip">ChurchSuite update pending</span>`:''}
         ${churchSuiteEnabled()&&x.type==='song'&&x.extraChurchSuiteSong?`<span class="churchsuite-extra-song-chip">Extra ChurchSuite song</span>`:''}
         ${x.type==='song'&&x.templateSongPlaceholder?`<span class="template-song-placeholder-chip">${churchSuiteEnabled()?'Awaiting ChurchSuite song':'Empty Song position'}</span>`:''}
-        ${x.templateProtected?`<span class="template-item-chip">Template</span>`:(churchSuiteEnabled()&&x.retainOnChurchSuiteSync)?`<span class="churchsuite-retained-chip">Kept on ChurchSuite sync</span>`:''}
-        ${churchSuiteEnabled()&&x.churchSuiteExcludedFromLastSync?`<span class="churchsuite-not-synced-chip">Not included in latest ChurchSuite sync</span>`:''}
       </div>
     </div>
     <div class="item-actions">
-      ${x.projected?`<div class="status ${x.ready?'ready':'missing'}">${x.ready
-        ?(churchSuiteEnabled()&&x.type==='song'&&x.churchSuiteSourceId&&x.churchSuiteWritePending?'✓ Local copy updated':'✓ Ready')
-        :'○ Missing'}</div>`:'<div class="status">Plan</div>'}
+      ${itemStatusHtml(x)}
       <button class="item-delete" type="button" data-delete="${x.id}" aria-label="Delete ${esc(x.title)}" title="Delete item"><svg class="trash-icon" viewBox="0 0 24 24" aria-hidden="true">
 <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/>
 </svg></button>
     </div>
   </article>`).join('');
 
+  wireTransientLabels(list);
+  setupAppMenus();
+
   list.querySelectorAll('.item').forEach(el=>{
     const id=el.dataset.id;
     const handle=el.querySelector('.handle');
 
     el.addEventListener('click',e=>{
+      if(openLPOnlyView)return;
       if(e.target.closest('.handle')) return;
       editItem(id);
     });
@@ -2149,25 +2483,80 @@ function initFloatingAdd(){
 }
 
 
-$('#undoBtn').onclick=undoLastChange;
-$('#redoBtn').onclick=redoLastChange;
+function closeHistoryMenu(){
+  const panel=$('#footerHistoryMenu');
+  const trigger=$('#footerHistoryMenuBtn');
+  if(panel)panel.hidden=true;
+  if(trigger)trigger.setAttribute('aria-expanded','false');
+}
+function wireHistoryMenu(){
+  const trigger=$('#footerHistoryMenuBtn');
+  const panel=$('#footerHistoryMenu');
+  if(!trigger||!panel)return;
+  // History bypasses the generic menu system. Desktop uses a normal click.
+  // Mobile Safari can consume the first tap on this fixed-footer control as a
+  // hover/focus gesture, so touchend opens it directly and suppresses the
+  // synthetic click that follows the touch.
+  let lastTouchOpenAt=0;
+  const toggle=()=>{
+    const opening=panel.hidden;
+    closeAppMenus(panel);
+    panel.hidden=!opening;
+    trigger.setAttribute('aria-expanded',opening?'true':'false');
+  };
+  trigger.addEventListener('touchend',e=>{
+    if(e.changedTouches?.length>1)return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    lastTouchOpenAt=Date.now();
+    toggle();
+  },{capture:true,passive:false});
+  trigger.addEventListener('click',e=>{
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if(Date.now()-lastTouchOpenAt<700)return;
+    toggle();
+  },true);
+}
+function wireHistoryAction(selector,action){
+  const button=$(selector);
+  if(!button)return;
+  button.addEventListener('click',e=>{
+    if(button.disabled)return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    // Close immediately for crisp feedback, then run exactly one command.
+    closeHistoryMenu();
+    Promise.resolve(action()).catch(err=>console.error(err));
+  },true);
+}
+wireHistoryMenu();
+wireHistoryAction('#undoBtn',undoLastChange);
+wireHistoryAction('#redoBtn',redoLastChange);
+wireHistoryAction('#resetEditBtn',resetThisEdit);
 $('#openLPViewBtn').onclick=()=>{
   openLPOnlyView=!openLPOnlyView;
   const btn=$('#openLPViewBtn');
   btn.setAttribute('aria-pressed',openLPOnlyView?'true':'false');
-  btn.textContent=openLPOnlyView?'Full Service':'OpenLP View';
+  btn.textContent='OpenLP View';
   document.body.classList.toggle('openlp-only-view',openLPOnlyView);
   render();
 };
+if($('#openLPReturnBtn'))$('#openLPReturnBtn').onclick=()=>{
+  openLPOnlyView=false;
+  const btn=$('#openLPViewBtn');
+  if(btn)btn.setAttribute('aria-pressed','false');
+  document.body.classList.remove('openlp-only-view');
+  closeAppMenus();
+  render();
+};
 $('#plannerSyncChurchSuiteBtn').onclick=()=>{
-  if(!churchSuiteEnabled())return;
-  const s=currentService();
-  if(!s || !(s.churchSuitePlanId||s.churchSuitePlanUrl))return;
-  openChurchSuiteImportModeChoice({
-    title:`Sync ${s.title}`,
-    onBack:()=>sheet.close(),
-    onConfirm:(importMode,templateId='')=>openChurchSuiteServiceScan(actualChurchSuitePlanUrl(s),s.id,{theme:s.theme,planId:s.churchSuitePlanId||null,importMode,templateId:templateId||defaultTemplateIdForService(s)})
-  });
+  const service=currentService();
+  if(service)openRegularChurchSuiteSyncForService(service,'planner');
+};
+if($('#plannerExpressChurchSuiteBtn'))$('#plannerExpressChurchSuiteBtn').onclick=()=>{
+  const service=currentService();
+  if(service)expressChurchSuiteSync(service,'planner');
 };
 
 $('#addBtn').onclick=()=>{openSheet(`<h2>Add to service</h2><div class="choice-grid">
@@ -2217,7 +2606,7 @@ function canvasToJpeg(canvas,quality=.88){
 async function convertPdfToImageFiles(file,onProgress=()=>{}){
   const pdfjs=await getPdfJs();
   const bytes=await file.arrayBuffer();
-  const pdf=await pdfjs.getDocument({data:bytes}).promise;
+  const pdf=await pdfjs.getDocument({data:bytes,enableScripting:false,enableXfa:false}).promise;
   const files=[];
   const base=file.name.replace(/\.pdf$/i,'')||'pdf';
 
@@ -3189,6 +3578,763 @@ function openBulkSongClassification(songIds,onBack){
   };
 }
 
+function normalizeSongMatchTitle(value){
+  return String(value||'')
+    .toLowerCase()
+    .replace(/&/g,' and ')
+    .replace(/[^a-z0-9]+/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function normalizeCcli(value){
+  return String(value||'').replace(/\D+/g,'').trim();
+}
+function compareChurchSuiteSongLibraries(churchSuiteSongs){
+  const local=songs||[];
+  const matchedLocalIds=new Set();
+  const matchedChurchSuiteIds=new Set();
+  const matches=[];
+  const conflicts=[];
+
+  for(const cs of churchSuiteSongs||[]){
+    const csCcli=normalizeCcli(cs.ccli);
+    const csTitle=normalizeSongMatchTitle(cs.title);
+    let match=null;
+    let matchType='';
+
+    if(csCcli){
+      match=local.find(song=>normalizeCcli(song.ccliNumber)===csCcli);
+      if(match)matchType='CCLI';
+    }
+    if(!match&&csTitle){
+      const titleCandidates=local.filter(song=>normalizeSongMatchTitle(song.title)===csTitle);
+      if(titleCandidates.length){
+        const compatible=titleCandidates.find(song=>{
+          const localCcli=normalizeCcli(song.ccliNumber);
+          return !csCcli||!localCcli||localCcli===csCcli;
+        });
+        if(compatible){match=compatible;matchType='Title';}
+        else{
+          conflicts.push({churchSuite:cs,local:titleCandidates[0],reason:'Same title, different CCLI'});
+        }
+      }
+    }
+    if(match){
+      matches.push({churchSuite:cs,local:match,matchType});
+      matchedLocalIds.add(String(match.id));
+      matchedChurchSuiteIds.add(String(cs.id));
+    }
+  }
+
+  const churchSuiteOnly=(churchSuiteSongs||[]).filter(cs=>
+    !matchedChurchSuiteIds.has(String(cs.id)) &&
+    !conflicts.some(row=>String(row.churchSuite?.id)===String(cs.id))
+  );
+  const openLpOnly=local.filter(song=>
+    !matchedLocalIds.has(String(song.id)) &&
+    !conflicts.some(row=>String(row.local?.id)===String(song.id))
+  );
+
+  return {matches,conflicts,churchSuiteOnly,openLpOnly};
+}
+function csvCell(value){
+  const text=String(value??'');
+  return `"${text.replace(/"/g,'""')}"`;
+}
+function downloadChurchSuiteSongImportCsv(rows){
+  const header=['Title','CCLI Number','Authors','Copyright'];
+  const lines=[header.map(csvCell).join(',')];
+  for(const song of rows||[]){
+    lines.push([
+      song.title||'',
+      song.ccliNumber||'',
+      Array.isArray(song.authors)?song.authors.join(', '):'',
+      song.copyright||''
+    ].map(csvCell).join(','));
+  }
+  downloadBlob(
+    new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'}),
+    'churchsuite-song-import.csv'
+  );
+}
+function songTitleTokens(value){
+  return new Set(normalizeSongMatchTitle(value).split(' ').filter(Boolean));
+}
+function songTitleSimilarity(a,b){
+  const aa=songTitleTokens(a),bb=songTitleTokens(b);
+  if(!aa.size||!bb.size)return 0;
+  let common=0;
+  for(const token of aa)if(bb.has(token))common++;
+  return common/Math.max(aa.size,bb.size);
+}
+function churchSuiteDuplicateCandidates(csSong){
+  const csCcli=normalizeCcli(csSong?.ccli);
+  const csTitle=normalizeSongMatchTitle(csSong?.title);
+  return (songs||[])
+    .map(local=>{
+      const localCcli=normalizeCcli(local.ccliNumber);
+      const sameCcli=!!csCcli&&!!localCcli&&csCcli===localCcli;
+      const sameTitle=!!csTitle&&csTitle===normalizeSongMatchTitle(local.title);
+      const similarity=songTitleSimilarity(csSong?.title,local.title);
+      let score=0,label='';
+      if(sameCcli){score=100;label='Same CCLI';}
+      else if(sameTitle){score=90;label='Same title';}
+      else if(similarity>=.8){score=80;label='Very similar title';}
+      else if(similarity>=.6){score=65;label='Similar title';}
+      return score?{local,score,label,similarity}:null;
+    })
+    .filter(Boolean)
+    .sort((a,b)=>b.score-a.score||String(a.local.title).localeCompare(String(b.local.title)))
+    .slice(0,6);
+}
+async function mergeChurchSuiteSongIntoLocal(csSong,localSong){
+  if(!csSong||!localSong)return;
+  const previous=structuredClone(localSong);
+
+  // OpenLP remains the master. Do not replace lyrics, classifications,
+  // service defaults or local title just because ChurchSuite labels differ.
+  localSong.churchSuiteSongId=csSong.id||localSong.churchSuiteSongId||null;
+  localSong.churchSuiteTitle=String(csSong.title||'').trim();
+  if(!String(localSong.ccliNumber||'').trim()&&String(csSong.ccli||'').trim()){
+    localSong.ccliNumber=String(csSong.ccli).trim();
+  }
+  if((!Array.isArray(localSong.authors)||!localSong.authors.length)&&Array.isArray(csSong.authors)&&csSong.authors.length){
+    localSong.authors=structuredClone(csSong.authors);
+  }
+  if(!String(localSong.copyright||'').trim()&&String(csSong.copyright||'').trim()){
+    localSong.copyright=String(csSong.copyright).trim();
+  }
+  localSong.churchSuiteMatchedAt=new Date().toISOString();
+  localSong.reconciledAt=new Date().toISOString();
+
+  try{
+    persistSongs();
+    await saveLibrarySongRemote(localSong);
+  }catch(err){
+    Object.assign(localSong,previous);
+    persistSongs();
+    throw err;
+  }
+}
+function churchSuiteSongImportOptions(csSong,returnTo,onSaved){
+  return {
+    prefillTitle:String(csSong?.title||''),
+    prefillCcliNumber:String(csSong?.ccli||''),
+    onBack:returnTo,
+    onSaved
+  };
+}
+function openManualChurchSuiteSongImport(csSong,{returnTo=openChurchSuiteSongComparison,onSaved=null}={}){
+  const options=churchSuiteSongImportOptions(csSong,returnTo,onSaved);
+  openManualSongAdd('library',options);
+}
+function openDownloadChurchSuiteSongImport(csSong,{returnTo=openChurchSuiteSongComparison,onSaved=null}={}){
+  const options=churchSuiteSongImportOptions(csSong,returnTo,onSaved);
+  openSongSelectGuidedImport('library',options);
+}
+function openUploadChurchSuiteSongImport(csSong,{returnTo=openChurchSuiteSongComparison,onSaved=null}={}){
+  const options=churchSuiteSongImportOptions(csSong,returnTo,onSaved);
+  openSongSelectFileImport('library',options);
+}
+function openBridgeChurchSuiteSongImport(csSong,{returnTo=openChurchSuiteSongComparison,onSaved=null}={}){
+  const options=churchSuiteSongImportOptions(csSong,returnTo,onSaved);
+  openSongSelectExtensionLaunch('library',options);
+}
+function churchSuiteSongImportMethods(){
+  return {
+    manual:true,
+    upload:true,
+    download:songSelectEnabled(),
+    bridge:songSelectBridgeAllowedForUser()
+  };
+}
+
+function openBestChurchSuiteSongImport(csSong,{returnTo=openChurchSuiteSongComparison,onSaved=null}={}){
+  const options=churchSuiteSongImportOptions(csSong,returnTo,onSaved);
+
+  if(songSelectBridgeAllowedForUser()){
+    openSongSelectExtensionLaunch('library',options);
+    return 'bridge';
+  }
+  if(songSelectEnabled()){
+    openSongSelectGuidedImport('library',options);
+    return 'download';
+  }
+  openSongAddMenu('library',options);
+  return 'manual';
+}
+function churchSuitePreferredSongAddLabel(){
+  if(songSelectBridgeAllowedForUser())return 'SongSelect browser';
+  if(songSelectEnabled())return 'SongSelect download';
+  return 'Add manually';
+}
+
+function preferredChurchSuiteImportMethod(){
+  if(songSelectBridgeAllowedForUser())return 'bridge';
+  if(songSelectEnabled())return 'download';
+  return 'manual';
+}
+function openChurchSuiteSongImportMethodChoice(churchSuiteRows){
+  const rows=(churchSuiteRows||[]).filter(Boolean);
+  if(!rows.length)return;
+  const methods=churchSuiteSongImportMethods();
+  const preferred=preferredChurchSuiteImportMethod();
+
+  openSheet(`<h2>Add selected songs</h2>
+    <p class="meta">${rows.length} selected song${rows.length===1?'':'s'} will be processed <strong>one at a time</strong>. Choose the method for this run.</p>
+    <div class="song-import-method-choice">
+      <label class="choice-line ${preferred==='manual'?'selected':''}">
+        <input type="radio" name="churchSuiteImportMethod" value="manual" ${preferred==='manual'?'checked':''}>
+        <span><strong>Add manual</strong><small>Open the normal song editor with ChurchSuite title and CCLI prefilled.</small></span>
+      </label>
+      ${methods.download?`<label class="choice-line ${preferred==='download'?'selected':''}">
+        <input type="radio" name="churchSuiteImportMethod" value="download" ${preferred==='download'?'checked':''}>
+        <span><strong>SongSelect download</strong><small>Open SongSelect with CCLI/title, download Lyrics, then import the file.</small></span>
+      </label>`:''}
+      <label class="choice-line">
+        <input type="radio" name="churchSuiteImportMethod" value="upload">
+        <span><strong>Upload SongSelect file</strong><small>Choose a SongSelect/CCLI lyrics file you already downloaded. It still goes through review and duplicate/merge comparison.</small></span>
+      </label>
+      ${methods.bridge?`<label class="choice-line ${preferred==='bridge'?'selected':''}">
+        <input type="radio" name="churchSuiteImportMethod" value="bridge" ${preferred==='bridge'?'checked':''}>
+        <span><strong>SongSelect browser</strong><small>Experimental. Open SongSelect with CCLI/title, open Lyrics, then click Send to OpenLP.</small></span>
+      </label>`:''}
+    </div>
+    <div class="info-card"><strong>Multiple songs</strong><p>Each song is completed separately. After saving or merging one song, you return to the batch and choose <strong>Next song</strong>.</p></div>
+    <div class="sheet-actions">
+      <button class="secondary" id="cancelChurchSuiteSongMethod">Back</button>
+      <button class="primary" id="startChurchSuiteSongMethod">Continue</button>
+    </div>`);
+
+  $('#cancelChurchSuiteSongMethod').onclick=openChurchSuiteSongComparison;
+  setSheetCloseAction(openChurchSuiteSongComparison);
+  body.querySelectorAll('input[name="churchSuiteImportMethod"]').forEach(radio=>radio.onchange=()=>{
+    body.querySelectorAll('.song-import-method-choice .choice-line').forEach(label=>label.classList.remove('selected'));
+    radio.closest('.choice-line')?.classList.add('selected');
+  });
+  $('#startChurchSuiteSongMethod').onclick=()=>{
+    const method=body.querySelector('input[name="churchSuiteImportMethod"]:checked')?.value||preferred;
+    openChurchSuiteManualAddQueue(rows,method,true);
+  };
+}
+
+function openChurchSuiteManualAddQueue(churchSuiteRows,method='preferred',autoStart=false){
+  const rows=(churchSuiteRows||[]).map(song=>({song,done:false,localSongId:null}));
+  let activeIndex=-1;
+
+  const methodLabel=()=>method==='manual'?'Add manual'
+    :method==='download'?'SongSelect download'
+    :method==='upload'?'Upload SongSelect file'
+    :method==='bridge'?'SongSelect browser'
+    :churchSuitePreferredSongAddLabel();
+
+  const firstPendingIndex=()=>rows.findIndex(row=>!row.done);
+  const nextPendingIndex=()=>rows.findIndex((row,index)=>index>activeIndex&&!row.done);
+
+  const finishQueue=()=>{
+    churchSuiteSongCompareSelectionState.selectedCs.clear();
+    churchSuiteSongCompareSelectionState.selectedLocal.clear();
+    openChurchSuiteSongComparison();
+  };
+
+  const renderQueue=(justCompleted=false)=>{
+    const completed=rows.filter(row=>row.done).length;
+    const next=nextPendingIndex()>=0?nextPendingIndex():firstPendingIndex();
+    const allDone=completed===rows.length;
+
+    openSheet(`<h2>Add ChurchSuite songs</h2>
+      <p class="meta"><strong>${esc(methodLabel())}</strong> · ${completed} of ${rows.length} completed.</p>
+      ${justCompleted?`<div class="success-card"><strong>Song completed ✓</strong><p>Review the batch below, then continue when ready.</p></div>`:''}
+      <div class="cs-manual-add-queue">
+        ${rows.map((row,index)=>`
+          <div class="cs-manual-add-row ${row.done?'done':''} ${index===activeIndex?'active':''}">
+            <div>
+              <strong>${esc(row.song.title||'Untitled song')}</strong>
+              <small>${row.song.ccli?`CCLI #${esc(row.song.ccli)}`:'No CCLI number'}${row.done?' · Added / reconciled ✓':index===activeIndex?' · Current':''}</small>
+            </div>
+            ${row.done
+              ?`<button class="secondary compact" type="button" data-edit-added-cs-song="${esc(String(row.localSongId||''))}">Edit</button>`
+              :`<button class="secondary compact" type="button" data-start-cs-song="${index}">${index===next?'Next':'Open'}</button>`}
+          </div>`).join('')}
+      </div>
+      <div class="sheet-actions">
+        <button class="secondary" id="csManualAddBack">Back to comparison</button>
+        ${!allDone&&next>=0?`<button class="primary" id="csManualAddNext">Next song</button>`:''}
+        ${allDone?'<button class="primary" id="csManualAddDone">Done</button>':''}
+      </div>`);
+
+    $('#csManualAddBack').onclick=finishQueue;
+    setSheetCloseAction(finishQueue);
+    if($('#csManualAddDone'))$('#csManualAddDone').onclick=finishQueue;
+    if($('#csManualAddNext'))$('#csManualAddNext').onclick=()=>runRow(next);
+
+    body.querySelectorAll('[data-start-cs-song]').forEach(btn=>btn.onclick=()=>{
+      runRow(Number(btn.dataset.startCsSong));
+    });
+    body.querySelectorAll('[data-edit-added-cs-song]').forEach(btn=>btn.onclick=()=>{
+      if(btn.dataset.editAddedCsSong)editLibrarySong(btn.dataset.editAddedCsSong,()=>renderQueue(false));
+    });
+  };
+
+  const runRow=index=>{
+    const row=rows[index];
+    if(!row||row.done)return;
+    activeIndex=index;
+
+    const returnToQueue=()=>renderQueue(false);
+    const importArgs={
+      returnTo:returnToQueue,
+      onSaved:async localSong=>{
+        if(localSong){
+          localSong.churchSuiteSongId=row.song.id||localSong.churchSuiteSongId||null;
+          localSong.churchSuiteTitle=row.song.title||localSong.churchSuiteTitle||'';
+          localSong.addedAt=localSong.addedAt||new Date().toISOString();
+          persistSongs();
+          await saveLibrarySongRemote(localSong);
+          row.done=true;
+          row.localSongId=localSong.id;
+        }
+        renderQueue(true);
+      }
+    };
+
+    if(method==='manual')openManualChurchSuiteSongImport(row.song,importArgs);
+    else if(method==='download')openDownloadChurchSuiteSongImport(row.song,importArgs);
+    else if(method==='upload')openUploadChurchSuiteSongImport(row.song,importArgs);
+    else if(method==='bridge')openBridgeChurchSuiteSongImport(row.song,importArgs);
+    else openBestChurchSuiteSongImport(row.song,importArgs);
+  };
+
+  if(autoStart){
+    const first=firstPendingIndex();
+    if(first>=0)runRow(first);
+    else renderQueue(false);
+  }else{
+    renderQueue(false);
+  }
+}
+
+function openChurchSuiteSongDuplicateReview(churchSuiteRows,onDone){
+  const rows=(churchSuiteRows||[]).map(cs=>{
+    const candidates=churchSuiteDuplicateCandidates(cs);
+    return {
+      cs,
+      candidates,
+      action:candidates.length?'merge':'add',
+      localId:candidates[0]?String(candidates[0].local.id):''
+    };
+  });
+
+  const render=()=>{
+    openSheet(`<h2>Step 1 of 2 · Review duplicates</h2>
+      <div class="warning-card duplicate-review-intro"><strong>Nothing has been added yet.</strong><p>For each ChurchSuite song, choose Merge, Add new or Skip. Merge keeps your OpenLP lyrics and local setup.</p></div>
+      <div class="song-duplicate-review">
+        ${rows.map((row,index)=>`
+          <div class="song-duplicate-review-row">
+            <div class="song-duplicate-source">
+              <strong>${esc(row.cs.title)}</strong>
+              <small>${row.cs.ccli?`ChurchSuite · CCLI #${esc(row.cs.ccli)}`:'ChurchSuite · no CCLI'}</small>
+            </div>
+            <div class="song-duplicate-choice">
+              <label><input type="radio" name="dup-action-${index}" value="merge" ${row.action==='merge'?'checked':''} ${row.candidates.length?'':'disabled'}> Merge</label>
+              <label><input type="radio" name="dup-action-${index}" value="add" ${row.action==='add'?'checked':''}> Add new</label>
+              <label><input type="radio" name="dup-action-${index}" value="skip" ${row.action==='skip'?'checked':''}> Skip</label>
+            </div>
+            ${row.candidates.length?`
+              <div class="field song-duplicate-candidate">
+                <label>Possible OpenLP match</label>
+                <select data-dup-local="${index}">
+                  ${row.candidates.map(c=>`<option value="${esc(String(c.local.id))}" ${String(c.local.id)===String(row.localId)?'selected':''}>${esc(c.local.title)}${c.local.ccliNumber?` · CCLI #${esc(c.local.ccliNumber)}`:''} · ${esc(c.label)}</option>`).join('')}
+                </select>
+              </div>`:`<div class="success-card compact-card song-duplicate-candidate"><strong>No likely duplicate found</strong></div>`}
+          </div>`).join('')}
+      </div>
+      <div class="sheet-actions">
+        <button class="secondary" id="dupReviewBack">Back</button>
+        <button class="primary" id="dupReviewContinue">Apply choices</button>
+      </div>`);
+
+    rows.forEach((row,index)=>{
+      body.querySelectorAll(`input[name="dup-action-${index}"]`).forEach(input=>input.onchange=()=>{
+        row.action=input.value;
+      });
+      const select=body.querySelector(`[data-dup-local="${index}"]`);
+      if(select)select.onchange=()=>row.localId=select.value;
+    });
+
+    $('#dupReviewBack').onclick=()=>onDone?.({cancelled:true});
+    setSheetCloseAction(()=>onDone?.({cancelled:true}));
+
+    $('#dupReviewContinue').onclick=async()=>{
+      const btn=$('#dupReviewContinue');
+      btn.disabled=true;btn.textContent='Applying…';
+      try{
+        let added=0,merged=0,skipped=0;
+        const results=[];
+        for(const row of rows){
+          if(row.action==='skip'){
+            skipped++;
+            results.push({status:'skipped',title:row.cs.title,ccli:row.cs.ccli||'',detail:'Skipped'});
+            continue;
+          }
+          if(row.action==='merge'){
+            const local=songs.find(song=>String(song.id)===String(row.localId));
+            if(local){
+              await mergeChurchSuiteSongIntoLocal(row.cs,local);
+              merged++;
+              const complete=Array.isArray(local.sections)&&local.sections.some(section=>String(section?.text||'').trim());
+              results.push({
+                status:'merged',
+                title:local.title,
+                sourceTitle:row.cs.title,
+                ccli:local.ccliNumber||row.cs.ccli||'',
+                detail:complete?'Merged · lyrics present':'Merged · metadata only',
+                complete
+              });
+              continue;
+            }
+          }
+          const created=await addChurchSuiteSongsToOpenLP([row.cs]);
+          const song=created[0];
+          if(song){
+            added++;
+            const complete=Array.isArray(song.sections)&&song.sections.some(section=>String(section?.text||'').trim());
+            results.push({
+              status:'added',
+              title:song.title,
+              ccli:song.ccliNumber||'',
+              detail:complete?'Added · complete':'Added · metadata only',
+              complete
+            });
+          }
+        }
+        onDone?.({added,merged,skipped,results});
+      }catch(err){
+        await appAlert(err?.message||String(err),{title:'Song reconciliation failed'});
+        render();
+      }
+    };
+  };
+
+  render();
+}
+
+async function addChurchSuiteSongsToOpenLP(rows){
+  const added=[];
+  for(const cs of rows||[]){
+    const song={
+      id:`cs-lib-${cs.id||Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+      title:String(cs.title||'').trim(),
+      alternateTitle:'',
+      authors:Array.isArray(cs.authors)?cs.authors:[],
+      ccliNumber:String(cs.ccli||'').trim(),
+      copyright:String(cs.copyright||'').trim(),
+      sections:[],
+      verseOrder:'',
+      musicNote:'',
+      classifications:defaultSongClassifications(),
+      churchSuiteSongId:cs.id||null,
+      importedFromChurchSuite:true,
+      addedAt:new Date().toISOString(),
+      addedSource:'churchsuite-comparison'
+    };
+    if(!song.title)continue;
+    songs.push(song);
+    persistSongs();
+    await createLibrarySongRemote(song);
+    added.push(song);
+  }
+  return added;
+}
+function openChurchSuiteManualSongList(rows,returnTo){
+  const list=(rows||[]).filter(Boolean);
+  const plain=list.map((song,index)=>{
+    const bits=[`${index+1}. ${song.title||'Untitled song'}`];
+    if(song.ccli)bits.push(`CCLI #${song.ccli}`);
+    if(Array.isArray(song.authors)&&song.authors.length)bits.push(song.authors.join(', '));
+    if(song.copyright)bits.push(song.copyright);
+    return bits.join(' — ');
+  }).join('\n');
+
+  openSheet(`<div class="manual-song-list-printable">
+      <h2>Songs to add manually</h2>
+      <p class="meta">${list.length} selected ChurchSuite song${list.length===1?'':'s'}.</p>
+      <div class="manual-song-list">
+        ${list.map((song,index)=>`
+          <div class="manual-song-list-row">
+            <span>${index+1}</span>
+            <div>
+              <strong>${esc(song.title||'Untitled song')}</strong>
+              <small>${[
+                song.ccli?`CCLI #${song.ccli}`:'',
+                Array.isArray(song.authors)&&song.authors.length?song.authors.join(', '):'',
+                song.copyright||''
+              ].filter(Boolean).map(esc).join(' · ')}</small>
+            </div>
+          </div>`).join('')}
+      </div>
+      <div class="field manual-song-copy-field">
+        <label>Copy / paste list</label>
+        <textarea id="manualSongListText" readonly>${esc(plain)}</textarea>
+      </div>
+    </div>
+    <div class="sheet-actions no-print">
+      <button class="secondary" id="manualSongListBack">Back</button>
+      <button class="secondary" id="copyManualSongList">Copy</button>
+      <button class="primary" id="printManualSongList">Print</button>
+    </div>`);
+
+  const back=()=>returnTo?returnTo():openChurchSuiteSongComparison();
+  $('#manualSongListBack').onclick=back;
+  setSheetCloseAction(back);
+
+  $('#copyManualSongList').onclick=async()=>{
+    const text=$('#manualSongListText')?.value||plain;
+    try{
+      await navigator.clipboard.writeText(text);
+      const btn=$('#copyManualSongList');
+      btn.textContent='Copied ✓';
+      setTimeout(()=>{if(btn)btn.textContent='Copy';},1000);
+    }catch(_){
+      $('#manualSongListText')?.select();
+      document.execCommand?.('copy');
+    }
+  };
+  $('#printManualSongList').onclick=()=>window.print();
+}
+
+let churchSuiteSongCompareSelectionState={
+  selectedCs:new Set(),
+  selectedLocal:new Set(),
+  lastResults:[]
+};
+
+async function openChurchSuiteSongComparison(){
+  if(!churchSuiteEnabled()){
+    await appAlert('Enable the ChurchSuite extension first.');
+    return;
+  }
+
+  openSheet(`<h2>ChurchSuite comparison</h2>
+    <div class="express-sync-working">
+      <div class="express-sync-spinner" aria-hidden="true"></div>
+      <div><strong>Comparing song libraries…</strong><span>CCLI first, then exact title.</span></div>
+    </div>
+    <div class="sheet-actions"><button class="secondary" id="songCompareBack">Back</button></div>`);
+  const leaveSongCompare=()=>{
+    churchSuiteSongCompareSelectionState.selectedCs.clear();
+    churchSuiteSongCompareSelectionState.selectedLocal.clear();
+    openSongLibrary();
+  };
+  $('#songCompareBack').onclick=leaveSongCompare;
+  setSheetCloseAction(leaveSongCompare);
+
+  try{
+    // Always reload our shared Song Library first so edits made on another device,
+    // or just returned from the editor, are reflected in the comparison.
+    await loadSongLibrary();
+    const data=await apiFetch('/api/churchsuite/song-library');
+    const churchSuiteSongs=Array.isArray(data.songs)?data.songs:[];
+    const comparison=compareChurchSuiteSongLibraries(churchSuiteSongs);
+
+    const selectedCs=churchSuiteSongCompareSelectionState.selectedCs;
+    const selectedLocal=churchSuiteSongCompareSelectionState.selectedLocal;
+
+    // Drop selections that no longer exist after an edit/merge/delete.
+    const validCsIds=new Set(comparison.churchSuiteOnly.map(song=>String(song.id)));
+    const validLocalIds=new Set(comparison.openLpOnly.map(song=>String(song.id)));
+    for(const id of [...selectedCs])if(!validCsIds.has(String(id)))selectedCs.delete(String(id));
+    for(const id of [...selectedLocal])if(!validLocalIds.has(String(id)))selectedLocal.delete(String(id));
+
+    const renderComparison=()=>{
+      openSheet(`<h2>ChurchSuite comparison</h2>
+        ${churchSuiteSongCompareSelectionState.lastResults.length?`
+          <div class="song-compare-last-results">
+            <div class="song-compare-last-results-head">
+              <strong>Last reconciliation</strong>
+              <button class="secondary compact" type="button" id="clearSongCompareResults">Clear</button>
+            </div>
+            ${churchSuiteSongCompareSelectionState.lastResults.map(row=>`
+              <div class="song-compare-last-result ${esc(row.status||'')}">
+                <span>${row.status==='merged'?'↔':row.status==='added'?'＋':'—'}</span>
+                <div><strong>${esc(row.title||'Song')}</strong><small>${esc(row.detail||'')}${row.ccli?` · CCLI #${esc(row.ccli)}`:''}</small></div>
+              </div>`).join('')}
+          </div>`:''}
+        <div class="song-compare-top-actions">
+          <button class="secondary compact" id="reviewLibraryDuplicates">Review OpenLP duplicates</button>
+        </div>
+        <div class="song-compare-counts">
+          <div><small>ChurchSuite</small><strong>${churchSuiteSongs.length}</strong></div>
+          <div><small>OpenLP</small><strong>${songs.length}</strong></div>
+          <div><small>Matched</small><strong>${comparison.matches.length}</strong></div>
+          <div><small>Only ChurchSuite</small><strong>${comparison.churchSuiteOnly.length}</strong></div>
+          <div><small>Only OpenLP</small><strong>${comparison.openLpOnly.length}</strong></div>
+          <div><small>Check</small><strong>${comparison.conflicts.length}</strong></div>
+        </div>
+
+        ${comparison.churchSuiteOnly.length?`
+          <div class="song-compare-section">
+            <div class="song-compare-section-head">
+              <div><strong>Missing from OpenLP</strong><span>Select songs to add. Known title/CCLI details are passed into SongSelect when available.</span></div>
+              <label class="song-compare-select-all"><input type="checkbox" id="selectAllCsMissing"><span>Select all</span></label>
+            </div>
+            <div class="song-compare-list">${comparison.churchSuiteOnly.map(song=>`
+              <label class="song-compare-row">
+                <input type="checkbox" data-select-cs-song="${esc(String(song.id))}" ${selectedCs.has(String(song.id))?'checked':''}>
+                <span><strong>${esc(song.title)}</strong><small>${song.ccli?`CCLI #${esc(song.ccli)}`:'No CCLI number'}</small></span>
+              </label>`).join('')}</div>
+            <div class="song-compare-actions">
+              <button class="secondary" id="makeSelectedCsSongList" ${selectedCs.size?'':'disabled'}>Make list${selectedCs.size?` (${selectedCs.size})`:''}</button>
+            </div>
+          </div>`:'<div class="success-card"><strong>OpenLP has every matched ChurchSuite song.</strong></div>'}
+
+        ${comparison.openLpOnly.length?`
+          <div class="song-compare-section">
+            <div class="song-compare-section-head">
+              <div><strong>Missing from ChurchSuite</strong><span>Select songs to export, edit or remove.</span></div>
+              <label class="song-compare-select-all"><input type="checkbox" id="selectAllLocalMissing"><span>Select all</span></label>
+            </div>
+            <div class="song-compare-list">${comparison.openLpOnly.map(song=>`
+              <div class="song-compare-row local-song-row">
+                <input type="checkbox" data-select-local-song="${esc(String(song.id))}" ${selectedLocal.has(String(song.id))?'checked':''}>
+                <button type="button" class="song-compare-edit-link" data-edit-compare-song="${esc(String(song.id))}">
+                  <strong>${esc(song.title)}</strong>
+                  <small>${song.ccliNumber?`CCLI #${esc(song.ccliNumber)}`:'No CCLI number'} · Edit</small>
+                </button>
+                <button type="button" class="item-delete song-compare-delete" data-delete-compare-song="${esc(String(song.id))}" title="Delete song" aria-label="Delete ${esc(song.title)}">
+                  <svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg>
+                </button>
+              </div>`).join('')}</div>
+            <div class="song-compare-actions">
+              <button class="secondary" id="exportSelectedLocalSongs" ${selectedLocal.size?'':'disabled'}>Export CSV${selectedLocal.size?` (${selectedLocal.size})`:''}</button>
+            </div>
+          </div>`:''}
+
+        ${comparison.conflicts.length?`
+          <div class="warning-card ccli-conflict-card">
+            <strong>Check these CCLI conflicts</strong>
+            <div class="song-compare-list">${comparison.conflicts.map(row=>`
+              <div class="song-compare-row conflict-row">
+                <span><strong>${esc(row.churchSuite.title)}</strong><small>ChurchSuite CCLI ${esc(row.churchSuite.ccli||'none')} · OpenLP CCLI ${esc(row.local.ccliNumber||'none')}</small></span>
+                <button class="secondary compact" type="button" data-edit-compare-song="${esc(String(row.local.id))}">Edit OpenLP</button>
+              </div>`).join('')}</div>
+          </div>`:''}
+
+        <p class="meta">CCLI is matched first, then exact normalized title. Existing OpenLP songs are never overwritten automatically.</p>
+        <div class="sheet-actions">
+          <button class="secondary" id="songCompareDone">Back</button>
+          <button class="primary" id="songCompareAddSelected" ${selectedCs.size?'':'disabled'}>Add selected${selectedCs.size?` (${selectedCs.size})`:''}</button>
+        </div>`);
+
+      const back=()=>{
+        churchSuiteSongCompareSelectionState.selectedCs.clear();
+        churchSuiteSongCompareSelectionState.selectedLocal.clear();
+        churchSuiteSongCompareSelectionState.lastResults=[];
+        openSongLibrary();
+      };
+      if($('#reviewLibraryDuplicates'))$('#reviewLibraryDuplicates').onclick=openDuplicateSongCleanup;
+      if($('#clearSongCompareResults'))$('#clearSongCompareResults').onclick=()=>{
+        churchSuiteSongCompareSelectionState.lastResults=[];
+        renderComparison();
+      };
+      $('#songCompareDone').onclick=back;
+      if($('#songCompareAddSelected'))$('#songCompareAddSelected').onclick=()=>{
+        const chosen=selectedChurchSuiteSongs();
+        if(chosen.length)openChurchSuiteSongImportMethodChoice(chosen);
+      };
+      setSheetCloseAction(back);
+
+      const updateButtons=()=>{
+        const add=$('#songCompareAddSelected');
+        if(add){
+          add.disabled=!selectedCs.size;
+          add.textContent=selectedCs.size?`Add selected (${selectedCs.size})`:'Add selected';
+        }
+        const makeList=$('#makeSelectedCsSongList');
+        if(makeList){
+          makeList.disabled=!selectedCs.size;
+          makeList.textContent=selectedCs.size?`Make list (${selectedCs.size})`:'Make list';
+        }
+        const exp=$('#exportSelectedLocalSongs');
+        if(exp){
+          exp.disabled=!selectedLocal.size;
+          exp.textContent=selectedLocal.size?`Export CSV (${selectedLocal.size})`:'Export CSV';
+        }
+      };
+
+      body.querySelectorAll('[data-select-cs-song]').forEach(box=>box.onchange=()=>{
+        const id=String(box.dataset.selectCsSong);
+        box.checked?selectedCs.add(id):selectedCs.delete(id);
+        updateButtons();
+      });
+      body.querySelectorAll('[data-select-local-song]').forEach(box=>box.onchange=()=>{
+        const id=String(box.dataset.selectLocalSong);
+        box.checked?selectedLocal.add(id):selectedLocal.delete(id);
+        updateButtons();
+      });
+
+      if($('#selectAllCsMissing'))$('#selectAllCsMissing').onchange=e=>{
+        selectedCs.clear();
+        if(e.target.checked)comparison.churchSuiteOnly.forEach(song=>selectedCs.add(String(song.id)));
+        renderComparison();
+      };
+      if($('#selectAllLocalMissing'))$('#selectAllLocalMissing').onchange=e=>{
+        selectedLocal.clear();
+        if(e.target.checked)comparison.openLpOnly.forEach(song=>selectedLocal.add(String(song.id)));
+        renderComparison();
+      };
+
+      if($('#makeSelectedCsSongList'))$('#makeSelectedCsSongList').onclick=()=>{
+        const chosen=comparison.churchSuiteOnly.filter(song=>selectedCs.has(String(song.id)));
+        if(chosen.length)openChurchSuiteManualSongList(chosen,openChurchSuiteSongComparison);
+      };
+
+      const selectedChurchSuiteSongs=()=>comparison.churchSuiteOnly.filter(song=>selectedCs.has(String(song.id)));
+
+      if($('#exportSelectedLocalSongs'))$('#exportSelectedLocalSongs').onclick=()=>{
+        const chosen=comparison.openLpOnly.filter(song=>selectedLocal.has(String(song.id)));
+        if(chosen.length)downloadChurchSuiteSongImportCsv(chosen);
+      };
+
+      body.querySelectorAll('[data-edit-compare-song]').forEach(btn=>btn.onclick=()=>{
+        editLibrarySong(btn.dataset.editCompareSong,openChurchSuiteSongComparison);
+      });
+
+      body.querySelectorAll('[data-delete-compare-song]').forEach(btn=>btn.onclick=async e=>{
+        e.preventDefault();
+        e.stopPropagation();
+        const song=songs.find(row=>String(row.id)===String(btn.dataset.deleteCompareSong));
+        if(!song)return;
+        const usages=songServiceUsages(song);
+        if(usages.length){
+          await appAlert(`“${song.title}” is used in ${usages.length} service${usages.length===1?'':'s'} and cannot be deleted yet.`,{title:'Song is in use'});
+          return;
+        }
+        const ok=await appConfirm(`Delete “${song.title}” from the shared Song Library?`,{title:'Delete song?',confirmLabel:'Delete',danger:true});
+        if(!ok)return;
+        await deleteLibrarySongRemote(song.id);
+        songs=songs.filter(row=>String(row.id)!==String(song.id));
+        persistSongs();
+        openChurchSuiteSongComparison();
+      });
+
+      updateButtons();
+    };
+
+    renderComparison();
+  }catch(err){
+    openSheet(`<h2>ChurchSuite comparison</h2>
+      <div class="warning-card"><strong>Could not read the ChurchSuite Song Library.</strong><p>${esc(err?.message||String(err))}</p></div>
+      <div class="sheet-actions"><button class="primary" id="songCompareErrorBack">Back</button></div>`);
+    $('#songCompareErrorBack').onclick=()=>{
+      churchSuiteSongCompareSelectionState.selectedCs.clear();
+      churchSuiteSongCompareSelectionState.selectedLocal.clear();
+      openSongLibrary();
+    };
+    setSheetCloseAction(()=>$('#songCompareErrorBack').click());
+  }
+}
+
 function openSongLibrary(){
   const selected=new Set();
 
@@ -3202,10 +4348,16 @@ function openSongLibrary(){
         <option value="">All classifications</option>
         ${songClassificationGroups().map(group=>`<optgroup label="${esc(group.name)}">${(group.items||[]).map(item=>`<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('')}</optgroup>`).join('')}
       </select></div>
+      <div class="field library-recent-filter"><label>View</label><select id="libraryRecentFilter">
+        <option value="">All songs</option>
+        <option value="recent">Recently added</option>
+      </select></div>
       <div class="song-export-actions">
+        ${churchSuiteEnabled()?`<button class="secondary compact churchsuite-compare-btn" id="compareChurchSuiteSongs">ChurchSuite comparison</button>`:''}
         <button class="secondary compact" id="findDuplicateSongs">Remove duplicates</button>
         <button class="secondary compact" id="selectVisibleSongs">Select visible</button>
         <button class="secondary compact" id="classifySelectedSongs" disabled>Classify selected</button>
+        <button class="secondary compact danger-quiet" id="deleteSelectedSongs" disabled>Delete selected</button>
         <button class="secondary compact" id="exportSelectedSongs" disabled>Export selected ZIP</button>
       </div>
     </div>
@@ -3217,17 +4369,27 @@ function openSongLibrary(){
 
   const input=$('#librarySearch');
   const classFilter=$('#libraryClassificationFilter');
+  const recentFilter=$('#libraryRecentFilter');
   const results=$('#libraryResults');
   const exportBtn=$('#exportSelectedSongs');
   const classifySelectedBtn=$('#classifySelectedSongs');
+  const deleteSelectedBtn=$('#deleteSelectedSongs');
 
+  function songRecentTimestamp(song){
+    const raw=song?.addedAt||song?.createdAt||song?.importedAt||song?.updatedAt||'';
+    const value=Date.parse(raw);
+    return Number.isFinite(value)?value:0;
+  }
   function visibleSongs(){
     const q=input.value.trim().toLowerCase();
     const classId=classFilter.value;
+    const recentOnly=recentFilter?.value==='recent';
+    const recentCutoff=Date.now()-(30*24*60*60*1000);
     return songs.filter(s=>{
       const text=[s.title,s.alternateTitle,...(s.authors||[]),...classificationNames(s)].join(' ').toLowerCase();
-      return (!q||text.includes(q))&&(!classId||(s.classifications||[]).map(String).includes(String(classId)));
-    }).slice(0,100);
+      const recent=!recentOnly||songRecentTimestamp(s)>=recentCutoff;
+      return recent&&(!q||text.includes(q))&&(!classId||(s.classifications||[]).map(String).includes(String(classId)));
+    }).sort((a,b)=>recentOnly?songRecentTimestamp(b)-songRecentTimestamp(a):String(a.title||'').localeCompare(String(b.title||''))).slice(0,100);
   }
 
   function updateExportState(){
@@ -3236,6 +4398,8 @@ function openSongLibrary(){
     exportBtn.textContent=count?`Export selected ZIP (${count})`:'Export selected ZIP';
     classifySelectedBtn.disabled=count===0;
     classifySelectedBtn.textContent=count?`Classify selected (${count})`:'Classify selected';
+    deleteSelectedBtn.disabled=count===0;
+    deleteSelectedBtn.textContent=count?`Delete selected (${count})`:'Delete selected';
   }
 
   function draw(){
@@ -3332,9 +4496,36 @@ function openSongLibrary(){
 
   input.oninput=draw;
   classFilter.onchange=draw;
+  if(recentFilter)recentFilter.onchange=draw;
   $('#libraryAddSong').onclick=()=>openSongAddMenu('library');
+  if($('#compareChurchSuiteSongs'))$('#compareChurchSuiteSongs').onclick=openChurchSuiteSongComparison;
   $('#findDuplicateSongs').onclick=openDuplicateSongCleanup;
   classifySelectedBtn.onclick=()=>openBulkSongClassification(new Set(selected),openSongLibrary);
+  deleteSelectedBtn.onclick=async()=>{
+    const chosen=songs.filter(song=>selected.has(String(song.id)));
+    if(!chosen.length)return;
+    const used=chosen.filter(song=>songServiceUsages(song).length);
+    const deletable=chosen.filter(song=>!songServiceUsages(song).length);
+    if(!deletable.length){
+      await appAlert('All selected songs are used in services and cannot be deleted.',{title:'Nothing to delete'});
+      return;
+    }
+    const ok=await appConfirm(
+      `Delete ${deletable.length} selected song${deletable.length===1?'':'s'} from the shared Song Library?${used.length?`\n\n${used.length} selected song${used.length===1?' is':'s are'} in use and will be kept.`:''}`,
+      {title:'Delete selected songs?',confirmLabel:'Delete',danger:true}
+    );
+    if(!ok)return;
+    deleteSelectedBtn.disabled=true;
+    deleteSelectedBtn.textContent='Deleting…';
+    for(const song of deletable){
+      await deleteLibrarySongRemote(song.id);
+      songs=songs.filter(row=>String(row.id)!==String(song.id));
+      selected.delete(String(song.id));
+    }
+    persistSongs();
+    draw();
+    if(used.length)await appAlert(`${deletable.length} deleted. ${used.length} in-use song${used.length===1?' was':'s were'} kept.`,{title:'Delete complete'});
+  };
   $('#selectVisibleSongs').onclick=()=>{
     const visible=visibleSongs();
     const allSelected=visible.length && visible.every(s=>selected.has(String(s.id)));
@@ -3393,7 +4584,7 @@ function songPreview(songId){
   };
 }
 
-function editLibrarySong(songId){
+function editLibrarySong(songId,returnTo=null){
   const s=songs.find(x=>String(x.id)===String(songId));
   if(!s) return;
 
@@ -3403,21 +4594,29 @@ function editLibrarySong(songId){
     <div class="field"><label>Title</label><input id="libTitle" value="${esc(s.title)}"></div>
     <div class="field"><label>Authors</label><input id="libAuthors" value="${esc((s.authors||[]).join(', '))}"></div>
 
-    <div class="section-editor">
+    <div class="library-lyrics-head">
+      <div><strong>Lyrics</strong><span>${(s.sections||[]).length?'Edit or import sections.':'No lyrics yet.'}</span></div>
+      <div class="library-lyrics-actions">
+        <button class="secondary compact" type="button" id="importLibrarySongLyrics">Add / import lyrics</button>
+        <button class="secondary compact" type="button" id="addLibrarySongSection">＋ Section</button>
+      </div>
+    </div>
+    <div class="section-editor" id="librarySongSectionEditor">
       ${(s.sections||[]).map((sec,i)=>`
-        <div class="edit-section">
+        <div class="edit-section" data-library-section-row>
           <div class="section-line">
-            <strong>${esc(sectionName(sec))}</strong>
-            <input class="secKey" data-i="${i}" value="${esc(sec.key||'')}" title="OpenLP section key">
+            <input class="secKey" value="${esc(sec.key||'')}" title="OpenLP section key" placeholder="v1">
+            <button class="item-delete compact-section-delete" type="button" data-remove-library-section title="Remove section" aria-label="Remove section">×</button>
           </div>
-          <textarea class="secText" data-i="${i}">${esc(sec.text||'')}</textarea>
+          <textarea class="secText" placeholder="Lyrics for this section">${esc(sec.text||'')}</textarea>
         </div>`).join('')}
     </div>
 
     <div class="field">
-      <label>Usual verse order</label>
+      <label>Library default verse order</label>
       <input id="libOrder" value="${esc(s.verseOrder||'')}" placeholder="e.g. v1 c1 v2 c1 v3 c1">
       <p class="meta verse-order-help">
+        This is the shared default copied into a service when the song is added. Changing the order in one service does not alter this unless you explicitly choose to make that service order the library default.
         Use OpenLP section keys in the order they should be projected. For example:
         <strong>v1 c1 v2 c1 v3 c1</strong> = Verse 1, Chorus 1, Verse 2, Chorus 1, Verse 3, Chorus 1.
         Other common keys include <strong>b1</strong> (Bridge 1), <strong>p1</strong> (Pre-chorus 1) and <strong>e1</strong> (Ending 1).
@@ -3432,13 +4631,14 @@ function editLibrarySong(songId){
     <div class="song-safety-row">
       <button class="secondary" id="undoSavedSong" disabled>Undo most recent saved version</button>
       <span class="meta" id="songRevisionStatus">Checking saved history…</span>
+      <button class="danger song-delete-arm" type="button" id="deleteLibrarySongFromEditor">Delete song</button>
     </div>
 
-    <p class="meta master-save-status" id="songMasterSaveStatus">Saving changes updates the shared master song for everyone.</p>
+    <p class="meta master-save-status" id="songMasterSaveStatus">Changes update the shared song.</p>
     <div class="sheet-actions">
-      <button class="secondary" id="cancelLibrarySong">Back to library</button>
-      <button class="secondary" id="saveLibrarySongCopy">Save a Copy</button>
-      <button class="primary" id="saveLibrarySong">Save changes to master</button>
+      <button class="secondary" id="cancelLibrarySong">Back</button>
+      <button class="secondary" id="saveLibrarySongCopy">Save copy</button>
+      <button class="primary" id="saveLibrarySong">Save master</button>
     </div>`);
 
   enforceClassificationControlRules(body);
@@ -3448,34 +4648,70 @@ function editLibrarySong(songId){
 
   const markDirty=()=>{
     dirty=true;
-    save.textContent='Save changes to master';
+    save.textContent='Save master';
   };
 
-  body.querySelectorAll('#libTitle,#libAuthors,.secKey,.secText,#libOrder,#libMusicNote,#libCcli,#libCopyright,input[name="songClass"]')
-    .forEach(el=>{
-      el.addEventListener('input',markDirty);
-      el.addEventListener('change',markDirty);
+  const wireSongEditorDirtyControls=scope=>{
+    (scope||body).querySelectorAll('#libTitle,#libAuthors,.secKey,.secText,#libOrder,#libMusicNote,#libCcli,#libCopyright,input[name="songClass"]')
+      .forEach(el=>{
+        if(el.dataset.dirtyWired)return;
+        el.dataset.dirtyWired='1';
+        el.addEventListener('input',markDirty);
+        el.addEventListener('change',markDirty);
+      });
+  };
+  const wireSectionRemoveButtons=()=>{
+    body.querySelectorAll('[data-remove-library-section]').forEach(btn=>{
+      if(btn.dataset.removeWired)return;
+      btn.dataset.removeWired='1';
+      btn.onclick=()=>{
+        btn.closest('[data-library-section-row]')?.remove();
+        markDirty();
+      };
     });
+  };
+  const addLibrarySongSection=(key='v1',text='')=>{
+    const editor=$('#librarySongSectionEditor');
+    if(!editor)return;
+    const row=document.createElement('div');
+    row.className='edit-section';
+    row.dataset.librarySectionRow='';
+    row.innerHTML=`<div class="section-line">
+      <input class="secKey" value="${esc(key)}" title="OpenLP section key" placeholder="v1">
+      <button class="item-delete compact-section-delete" type="button" data-remove-library-section title="Remove section" aria-label="Remove section">×</button>
+    </div>
+    <textarea class="secText" placeholder="Lyrics for this section">${esc(text)}</textarea>`;
+    editor.appendChild(row);
+    wireSongEditorDirtyControls(row);
+    wireSectionRemoveButtons();
+    markDirty();
+    row.querySelector('.secKey')?.focus();
+  };
+  wireSongEditorDirtyControls(body);
+  wireSectionRemoveButtons();
+  $('#addLibrarySongSection').onclick=()=>{
+    const rows=body.querySelectorAll('[data-library-section-row]').length;
+    addLibrarySongSection(`v${rows+1}`,'');
+  };
+  $('#importLibrarySongLyrics').onclick=()=>openExistingSongLyricsMenu(s.id,()=>editLibrarySong(s.id,returnTo));
+
 
   function draftSongFromEditor(base=s){
     const draft=structuredClone(base);
     draft.title=$('#libTitle').value.trim()||base.title;
     draft.authors=$('#libAuthors').value.split(',').map(x=>x.trim()).filter(Boolean);
 
-    const sections=structuredClone(base.sections||[]);
-    document.querySelectorAll('.secText').forEach((el,i)=>{
-      if(sections[i]) sections[i].text=el.value;
-    });
-    document.querySelectorAll('.secKey').forEach((el,i)=>{
-      if(!sections[i]) return;
-      const key=el.value.trim().toLowerCase();
-      if(!key) return;
-      sections[i].key=key;
+    const sections=[];
+    body.querySelectorAll('[data-library-section-row]').forEach(row=>{
+      const key=String(row.querySelector('.secKey')?.value||'').trim().toLowerCase()||`v${sections.length+1}`;
+      const text=String(row.querySelector('.secText')?.value||'');
       const match=key.match(/^([a-z]+)(\d*)$/);
-      if(match){
-        sections[i].type=match[1].charAt(0);
-        sections[i].label=match[2]||'1';
-      }
+      sections.push({
+        key,
+        type:match?match[1].charAt(0):'v',
+        label:match?(match[2]||'1'):String(sections.length+1),
+        text
+      });
     });
     draft.sections=sections;
     draft.verseOrder=$('#libOrder').value.trim();
@@ -3499,7 +4735,46 @@ function editLibrarySong(songId){
 
   refreshRevisionStatus();
 
-  $('#cancelLibrarySong').onclick=()=>openSongLibrary();
+  $('#cancelLibrarySong').onclick=()=>returnTo?returnTo():openSongLibrary();
+
+  const deleteFromEditor=$('#deleteLibrarySongFromEditor');
+  if(deleteFromEditor){
+    let deleteArmed=false;
+    let deleteTimer=null;
+    const resetDeleteArm=()=>{
+      clearTimeout(deleteTimer);
+      deleteArmed=false;
+      deleteFromEditor.classList.remove('armed');
+      deleteFromEditor.textContent='Delete song';
+    };
+    deleteFromEditor.onclick=async()=>{
+      if(!deleteArmed){
+        deleteArmed=true;
+        deleteFromEditor.classList.add('armed');
+        deleteFromEditor.textContent='Tap again · Delete';
+        deleteTimer=setTimeout(resetDeleteArm,3000);
+        return;
+      }
+      resetDeleteArm();
+      const usages=songServiceUsages(s);
+      if(usages.length){
+        await appAlert(`“${s.title}” is used in ${usages.length} service${usages.length===1?'':'s'} and cannot be deleted yet.`,{title:'Song is in use'});
+        return;
+      }
+      deleteFromEditor.disabled=true;
+      deleteFromEditor.textContent='Deleting…';
+      try{
+        await deleteLibrarySongRemote(s.id);
+        songs=songs.filter(song=>String(song.id)!==String(s.id));
+        persistSongs();
+        returnTo?returnTo():openSongLibrary();
+      }catch(err){
+        deleteFromEditor.disabled=false;
+        deleteFromEditor.textContent='Delete song';
+        await appAlert(err?.message||String(err),{title:'Delete failed'});
+      }
+    };
+  }
 
   $('#saveLibrarySongCopy').onclick=()=>{
     const draft=draftSongFromEditor();
@@ -3522,7 +4797,7 @@ function editLibrarySong(songId){
     update();
     setTimeout(()=>suffix.focus(),0);
 
-    $('#cancelSongCopy').onclick=()=>editLibrarySong(songId);
+    $('#cancelSongCopy').onclick=()=>editLibrarySong(songId,returnTo);
     confirm.onclick=async()=>{
       const value=suffix.value.trim();
       if(!value)return;
@@ -3540,7 +4815,7 @@ function editLibrarySong(songId){
       persistSongs();
       await createLibrarySongRemote(copy);
       
-      openSongLibrary();
+      returnTo?returnTo():openSongLibrary();
     };
   };
 
@@ -3573,10 +4848,10 @@ function editLibrarySong(songId){
         });
         persistPlanner();
         
-        editLibrarySong(s.id);
+        editLibrarySong(s.id,returnTo);
       }catch(err){
         appAlert(err.message||String(err));
-        editLibrarySong(songId);
+        editLibrarySong(songId,returnTo);
       }
     };
   };
@@ -3584,14 +4859,14 @@ function editLibrarySong(songId){
   save.onclick=async()=>{
     if(!dirty){
       save.textContent='No changes to save';
-      setTimeout(()=>{ if(save)save.textContent='Save changes to master'; },900);
+      setTimeout(()=>{ if(save)save.textContent='Save master'; },900);
       return;
     }
 
     const oldTitle=s.title;
     const previous=structuredClone(s);
     const draft=draftSongFromEditor();
-    const originalLabel='Save changes to master';
+    const originalLabel='Save master';
 
     save.disabled=true;
     save.textContent='Saving…';
@@ -3623,8 +4898,8 @@ function editLibrarySong(songId){
       save.textContent='Saved ✓';
       render();
 
-      // Leave visible acknowledgement before returning to the library.
-      setTimeout(()=>openSongLibrary(),650);
+      // Leave visible acknowledgement before returning to the calling list.
+      setTimeout(()=>returnTo?returnTo():openSongLibrary(),650);
     }catch(err){
       Object.assign(s,previous);
       save.disabled=false;
@@ -3758,6 +5033,378 @@ function addLibrarySongToCurrentService(song,detail='Added from Song Library'){
   persistPlanner();saveServiceItem(item);
   markServiceEdited('added song');appendAudit('added song',item.title);
 }
+async function applyImportedSongToExisting(existingSongId,imported,returnTo=null){
+  const existing=songs.find(song=>String(song.id)===String(existingSongId));
+  if(!existing)throw new Error('The library song could not be found.');
+  const sections=Array.isArray(imported?.sections)?structuredClone(imported.sections):[];
+  if(!sections.some(section=>String(section?.text||'').trim()))throw new Error('No lyrics were found in that import.');
+
+  existing.sections=sections;
+  existing.verseOrder=String(imported.verseOrder||existing.verseOrder||'').trim();
+  if((!Array.isArray(existing.authors)||!existing.authors.length)&&Array.isArray(imported.authors))existing.authors=structuredClone(imported.authors);
+  if(!String(existing.ccliNumber||'').trim()&&String(imported.ccliNumber||'').trim())existing.ccliNumber=String(imported.ccliNumber).trim();
+  if(!String(existing.copyright||'').trim()&&String(imported.copyright||'').trim())existing.copyright=String(imported.copyright).trim();
+  existing.updatedAt=new Date().toISOString();
+  persistSongs();
+  await saveLibrarySongRemote(existing);
+  returnTo?returnTo():editLibrarySong(existing.id);
+}
+
+function openExistingSongLyricsMenu(songId,returnTo=null){
+  const song=songs.find(row=>String(row.id)===String(songId));
+  if(!song)return;
+  openSheet(`<h2>Add / import lyrics</h2>
+    <p class="meta"><strong>${esc(song.title)}</strong>${song.ccliNumber?` · CCLI #${esc(song.ccliNumber)}`:''}</p>
+    <div class="choice-grid song-import-choice-grid">
+      <button class="choice" id="existingLyricsManual"><strong>Enter manually</strong><span>Add sections in the song editor.</span></button>
+      <button class="choice" id="existingLyricsPaste"><strong>SongSelect paste</strong><span>Paste copied SongSelect lyrics.</span></button>
+      <button class="choice" id="existingLyricsFile"><strong>SongSelect file</strong><span>Upload a SongSelect / CCLI text file.</span></button>
+      <button class="choice" id="existingLyricsOpenLyrics"><strong>OpenLyrics</strong><span>Upload an OpenLyrics XML file.</span></button>
+    </div>
+    <div class="sheet-actions"><button class="secondary" id="existingLyricsBack">Back</button></div>`);
+  const back=()=>returnTo?returnTo():editLibrarySong(song.id);
+  $('#existingLyricsBack').onclick=back;
+  setSheetCloseAction(back);
+  const options={updateExistingSongId:song.id,onBack:back};
+  $('#existingLyricsManual').onclick=()=>editLibrarySong(song.id,returnTo);
+  $('#existingLyricsPaste').onclick=()=>songSelectPaste('library',options);
+  $('#existingLyricsFile').onclick=()=>openSongSelectFileImport('library',options);
+  $('#existingLyricsOpenLyrics').onclick=()=>openOpenLyricsImport('library',options);
+}
+
+const DEFAULT_SONGSELECT_SEARCH_URL='https://songselect.ccli.com/search/results?search={search}';
+const DEFAULT_SONGSELECT_CCLI_URL='https://songselect.ccli.com/songs/{ccli}';
+const LEGACY_SONGSELECT_SEARCH_URLS=new Set([
+  'https://songselect.ccli.com',
+  'https://songselect.ccli.com/',
+  'https://songselect.ccli.com/search/results?SearchText={search}',
+  'https://songselect.ccli.com/search/results?SearchText={search}',
+  'https://songselect.ccli.com/search/results?searchText={search}'
+]);
+function normaliseSongSelectSearchUrlSetting(value){
+  const current=String(value||'').trim();
+  if(!current||LEGACY_SONGSELECT_SEARCH_URLS.has(current))return DEFAULT_SONGSELECT_SEARCH_URL;
+  return current;
+}
+
+function songSelectSearchUrlTemplate(){
+  const fixed=normaliseSongSelectSearchUrlSetting(state.settings?.songSelectSearchUrl);
+  if(state.settings&&state.settings.songSelectSearchUrl!==fixed){
+    state.settings.songSelectSearchUrl=fixed;
+    persistPlanner();
+  }
+  return fixed;
+}
+function songSelectCcliUrlTemplate(){
+  return String(state.settings?.songSelectCcliUrl||DEFAULT_SONGSELECT_CCLI_URL).trim()||DEFAULT_SONGSELECT_CCLI_URL;
+}
+function buildSongSelectSearchTarget(search){
+  const value=String(search||'').trim();
+  const numeric=/^\d+$/.test(value);
+
+  if(numeric){
+    const encoded=encodeURIComponent(value);
+    const template=songSelectCcliUrlTemplate();
+    const raw=template.includes('{ccli}')?template.replaceAll('{ccli}',encoded):template;
+    try{
+      const url=new URL(raw);
+      if(url.protocol!=='https:')throw new Error();
+      return {url:url.href,numeric:true,copy:false};
+    }catch(_){
+      throw new Error('The configured SongSelect CCLI lookup URL is not valid. Use an https address.');
+    }
+  }
+
+  // SongSelect's working text route uses ?search= and accepts + for spaces.
+  const encoded=value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(part=>encodeURIComponent(part))
+    .join('+');
+  const template=songSelectSearchUrlTemplate();
+  const raw=template.includes('{search}')?template.replaceAll('{search}',encoded):template;
+  try{
+    // Validate protocol/origin without reserialising the query, because URL.href
+    // rewrites literal + in the search term and SongSelect's route expects + for spaces.
+    const parsed=new URL(raw);
+    if(parsed.protocol!=='https:')throw new Error();
+    return {url:raw,numeric:false,copy:false};
+  }catch(_){
+    throw new Error('The configured SongSelect text search URL is not valid. Use an https address.');
+  }
+}
+function openSongSelectGuidedImport(destination='library',options={}){
+  const suggested=String(
+    options.prefillCcliNumber||
+    options.ccliNumber||
+    options.prefillTitle||
+    options.songTitle||
+    options.title||
+    ''
+  ).trim();
+  openSheet(`<h2>Get song from SongSelect</h2>
+    <p class="meta">Open SongSelect, sign in if needed, select the correct song, then open its <strong>Lyrics</strong> page and use SongSelect's normal <strong>Download</strong>. Return here and choose the downloaded file.</p>
+    <div class="field"><label>Song title or CCLI number</label><input id="songSelectGuidedSearch" value="${esc(suggested)}" placeholder="Search SongSelect"></div>
+    <div class="songselect-guided-actions">
+      <button class="primary" id="openSongSelectSearch" type="button">Open SongSelect ↗</button>
+      <span id="songSelectGuidedOpened" class="meta"></span>
+    </div>
+    <div class="songselect-guided-upload">
+      <strong>Then import the download</strong>
+      <p class="meta">The Planner cannot read your Downloads folder automatically. Choose the file SongSelect downloaded.</p>
+      <label class="secondary file-button full">Choose downloaded SongSelect file<input id="songSelectGuidedFile" type="file" accept=".txt,.rtf,text/plain,application/rtf,text/rtf"></label>
+      <div id="songSelectGuidedStatus" class="meta"></div>
+    </div>
+    <div class="sheet-actions"><button class="secondary" id="songSelectGuidedBack">Back</button></div>`);
+  const back=()=>typeof options.onBack==='function'
+    ?options.onBack()
+    :openSongAddMenu(destination,options);
+  $('#songSelectGuidedBack').onclick=back;
+  setSheetCloseAction(back);
+  $('#openSongSelectSearch').onclick=()=>{
+    const search=$('#songSelectGuidedSearch').value.trim();
+    if(!search){$('#songSelectGuidedStatus').textContent='Enter a title or CCLI number first.';return;}
+    try{
+      const target=buildSongSelectSearchTarget(search);
+      const opened=window.open(target.url,'openlp-songselect-manual');
+      if(!opened){
+        $('#songSelectGuidedStatus').textContent='Your browser blocked the SongSelect window. Allow pop-ups and try again.';
+        return;
+      }
+      $('#songSelectGuidedOpened').textContent=target.numeric
+        ?'SongSelect opened directly by CCLI number. Return here after downloading the lyrics.'
+        :'SongSelect opened with your text search. Return here after downloading the lyrics.';
+    }catch(err){$('#songSelectGuidedStatus').textContent=err?.message||String(err);}
+  };
+  $('#songSelectGuidedFile').onchange=async e=>{
+    const file=e.target.files?.[0]; if(!file)return;
+    const status=$('#songSelectGuidedStatus'); status.textContent='Reading download…';
+    try{
+      let raw=await file.text();
+      if(file.name.toLowerCase().endsWith('.rtf')||String(file.type||'').toLowerCase().includes('rtf')||/^\s*\{\\rtf/i.test(raw)){
+        raw=raw.replace(/\\par[d]?\b/g,'\n').replace(/\\line\b/g,'\n').replace(/\\'[0-9a-fA-F]{2}/g,' ').replace(/\\[a-zA-Z]+-?\d* ?/g,'').replace(/[{}]/g,'').replace(/\r/g,'');
+      }
+      const parsed=parseSongSelect(raw);
+      if(!parsed.title||!parsed.sections?.length){status.textContent='I could not find a title and lyric sections in that SongSelect file.';return;}
+      parsed.comments=[parsed.comments||'','Imported from SongSelect download: '+file.name].filter(Boolean).join(' · ');
+      parsed.source='songselect-guided-download';
+      songSelectReview(parsed,destination,{
+        ...options,
+        songSelectReviewBack:()=>typeof options.onBack==='function'
+          ?options.onBack()
+          :openSongSelectGuidedImport(destination,options)
+      });
+    }catch(err){status.textContent='Could not read this file: '+(err?.message||String(err));}
+  };
+}
+
+function songSelectEnabled(){
+  return state.settings?.songSelectEnabled!==false;
+}
+function songSelectBridgeEnabled(){
+  return state.settings?.songSelectBridgeEnabled===true;
+}
+function songSelectBridgeAllowedForUser(){
+  return songSelectBridgeEnabled() && Number(authenticatedUser?.accessLevel||0)>=3;
+}
+function songSelectPayloadToLibrarySong(payload){
+  const partMap={
+    verse:'v',chorus:'c',bridge:'b','pre-chorus':'p','pre chorus':'p',
+    prechorus:'p',tag:'t',ending:'e',intro:'i'
+  };
+  const sections=(Array.isArray(payload?.lyrics)?payload.lyrics:[]).map((part,index)=>{
+    const rawType=String(part?.partType||'').trim().toLowerCase();
+    const type=partMap[rawType]||'o';
+    const number=Number(part?.partTypeNumber)||1;
+    return {
+      key:`${type}${number}`,
+      type,
+      label:String(number),
+      text:String(part?.lyrics||'').replace(/\s*\|\s*/g,'\n').trim()
+    };
+  }).filter(section=>section.text);
+
+  return {
+    id:`songselect-${String(payload?.ccliSongNumber||Date.now())}-${Date.now()}`,
+    title:String(payload?.title||'').trim()||'Untitled song',
+    alternateTitle:'',
+    authors:(Array.isArray(payload?.authors)?payload.authors:[])
+      .map(author=>String(author?.label||author?.name||author||'').trim())
+      .filter(Boolean),
+    sections,
+    verseOrder:sections.map(section=>section.key).join(' '),
+    musicNote:'',
+    ccliNumber:String(payload?.ccliSongNumber||'').trim(),
+    copyright:String(payload?.copyrights||'').trim(),
+    classifications:defaultSongClassifications(),
+    source:'songselect-browser-extension',
+    addedAt:new Date().toISOString()
+  };
+}
+function openSongSelectExtensionHelp(onBack=null){
+  openSheet(`<h2>SongSelect Browser Extension</h2>
+    <div class="songselect-bridge-intro">
+      <strong>Optional automatic import for Edge / Chrome</strong>
+      <p>The extension always runs on SongSelect and requests access only to the Planner address configured in its Options page. When SongSelect was opened from the Planner, Send to OpenLP returns to that same Planner tab. It does not store your CCLI password or SongSelect session cookies.</p>
+    </div>
+    <div class="songselect-extension-install">
+      <a class="primary button-link" href="/downloads/songselect-openlp-extension.zip" download>Download extension ZIP</a>
+      <ol>
+        <li>Download and unzip the extension.</li>
+        <li><strong>Edge:</strong> open <code>edge://extensions</code>. <strong>Chrome:</strong> open <code>chrome://extensions</code>.</li>
+        <li>Turn on <strong>Developer mode</strong>, choose <strong>Load unpacked</strong>, then select the unzipped folder containing <code>manifest.json</code>.</li>
+        <li>Open a song's <strong>Lyrics</strong> page in SongSelect and press <strong>Send to OpenLP</strong>.</li>
+      </ol>
+      <p class="meta">SongSelect still handles sign-in, entitlement and its normal lyrics-download activity. The extension transfers only the authorised song data into the Planner.</p>
+    </div>
+    <div class="sheet-actions"><button class="secondary" id="songSelectExtensionHelpBack">Back</button></div>`);
+  const back=()=>typeof onBack==='function'?onBack():openSettings('extensions');
+  $('#songSelectExtensionHelpBack').onclick=back;
+  setSheetCloseAction(back);
+}
+
+let songSelectBridgePendingContext=null;
+function openSongSelectExtensionLaunch(destination='library',options={}){
+  songSelectBridgePendingContext={destination,options};
+  const knownCcli=String(options.prefillCcliNumber||options.ccliNumber||'').trim();
+  const knownTitle=String(options.prefillTitle||options.songTitle||options.title||'').trim();
+  const suggested=knownCcli||knownTitle;
+  openSheet(`<h2>SongSelect Browser</h2>
+    <div class="songselect-bridge-intro">
+      <strong>Use the browser extension in SongSelect</strong>
+      <p>The extension is already enabled in this Planner. Open SongSelect and choose the song. <strong>Then select the Lyrics page</strong> before pressing the floating <strong>Send to OpenLP</strong> extension button. The extension will return the song to this Planner tab.</p>
+    </div>
+    <div class="songselect-extension-launch-actions">
+      <button class="primary" type="button" id="openSongSelectForExtension">${suggested?'Open matching SongSelect result':'Open SongSelect'} ↗</button>
+      <span class="meta">${suggested?`Using ${knownCcli?`CCLI #${esc(knownCcli)}`:esc(knownTitle)}.`:'This Planner can stay open while you work in SongSelect.'}</span>
+    </div>
+    <div class="info-card songselect-extension-reminder">
+      <strong>In SongSelect</strong>
+      <p><strong>1.</strong> Select the correct song. &nbsp; <strong>2.</strong> Open <strong>Lyrics</strong>. &nbsp; <strong>3.</strong> Click <strong>Send to OpenLP</strong>.</p>
+      <p>The extension then switches back to this Planner tab and takes you into duplicate checking / merge.</p>
+    </div>
+    <div class="sheet-actions"><button class="secondary" id="songSelectExtensionLaunchBack">Back</button></div>`);
+  const back=()=>typeof options.onBack==='function'
+    ?options.onBack()
+    :openSongAddMenu(destination,options);
+  $('#songSelectExtensionLaunchBack').onclick=back;
+  setSheetCloseAction(back);
+  $('#openSongSelectForExtension').onclick=()=>{
+    let target='https://songselect.ccli.com';
+    if(suggested){
+      try{target=buildSongSelectSearchTarget(suggested).url;}catch(_){}
+    }
+    const win=window.open(target,'openlp-songselect-extension');
+    if(!win)appAlert('Your browser blocked the SongSelect window. Allow pop-ups and try again.',{title:'SongSelect blocked'});
+  };
+}
+
+function songDuplicateMatchDetail(song){
+  const ccli=String(song?.ccliNumber||'').trim();
+  const title=duplicateBaseTitle(song?.title);
+  for(const existing of songs||[]){
+    const existingCcli=String(existing?.ccliNumber||'').trim();
+    if(ccli&&existingCcli===ccli)return {song:existing,reason:'Same CCLI number',strength:'strong'};
+  }
+  for(const existing of songs||[]){
+    if(title&&duplicateBaseTitle(existing?.title)===title)return {song:existing,reason:'Matching title',strength:'title'};
+  }
+  return null;
+}
+async function openSongSelectBridgeImport(payload){
+  const pendingContext=songSelectBridgePendingContext;
+  songSelectBridgePendingContext=null;
+  const bridgeDestination=pendingContext?.destination||'library';
+  const bridgeOptions=pendingContext?.options||{};
+  const product=payload?.products?.lyrics;
+  if(!songSelectBridgeAllowedForUser()){
+    await appAlert('Administrator access and an enabled SongSelect Browser Bridge are required to use this import.',{title:'SongSelect extension unavailable'});
+    return;
+  }
+  if(!product||product.authorized!==true){
+    await appAlert(product?.noAuthReason||'SongSelect did not authorise lyrics for this song.',{title:'SongSelect lyrics unavailable'});
+    return;
+  }
+  const song=songSelectPayloadToLibrarySong(payload);
+  if(!song.sections.length){
+    await appAlert('SongSelect returned no lyric sections.',{title:'Nothing to import'});
+    return;
+  }
+
+  await loadSongLibrary();
+  const duplicateMatch=songDuplicateMatchDetail(song);
+  const duplicate=duplicateMatch?.song||null;
+
+  openSheet(`<h2>Import from SongSelect</h2>
+    <div class="songselect-bridge-song">
+      <strong>${esc(song.title)}</strong>
+      <span>${song.authors.length?esc(song.authors.join(', ')):'No author'}${song.ccliNumber?` · CCLI #${esc(song.ccliNumber)}`:''}</span>
+      <small>${song.sections.length} lyric section${song.sections.length===1?'':'s'} · SongSelect authorised</small>
+    </div>
+    ${duplicate?`<div class="${songCcliMismatch(duplicate.ccliNumber,song.ccliNumber)?'critical-ccli-warning':'warning-card'}">
+      <strong>${songCcliMismatch(duplicate.ccliNumber,song.ccliNumber)?'Different CCLI numbers':'Existing library match'} · ${esc(duplicateMatch?.reason||'Match found')}</strong>
+      <p>${esc(duplicate.title)}${duplicate.ccliNumber?` · Library CCLI #${esc(duplicate.ccliNumber)}`:''}${song.ccliNumber?` · Imported CCLI #${esc(song.ccliNumber)}`:''}</p>
+      <p>${songCcliMismatch(duplicate.ccliNumber,song.ccliNumber)?'These may be distinct songs or versions. Compare carefully; Save as new is usually safer.':'Review the exact changes before updating this library song, or deliberately add another new song.'}</p>
+    </div>`:''}
+    <div class="songselect-bridge-preview">
+      ${song.sections.map(section=>`<details><summary>${esc(sectionName(section))}</summary><pre>${esc(section.text)}</pre></details>`).join('')}
+    </div>
+    <p class="meta">SongSelect remains responsible for authentication and lyrics-download accounting. The Planner stores only the imported song data.</p>
+    <div class="sheet-actions">
+      <button class="secondary" id="cancelSongSelectBridgeImport">Cancel</button>
+      ${duplicate?`<button class="secondary" id="addSongSelectBridgeCopy">Add as new</button><button class="primary" id="updateSongSelectBridgeExisting">Compare / merge</button>`:`<button class="primary" id="saveSongSelectBridgeImport">Add to Song Library</button>`}
+    </div>`);
+
+  const finish=async song=>{
+    if(song&&typeof bridgeOptions.onSaved==='function'){
+      await bridgeOptions.onSaved(song);
+      return;
+    }
+    if(typeof bridgeOptions.onBack==='function'){
+      bridgeOptions.onBack();
+      return;
+    }
+    openSongLibrary();
+  };
+  $('#cancelSongSelectBridgeImport').onclick=()=>finish(null);
+  setSheetCloseAction(finish);
+
+  if($('#updateSongSelectBridgeExisting'))$('#updateSongSelectBridgeExisting').onclick=()=>{
+    reviewSongSelectExistingMatch(duplicate,song,bridgeDestination,{...bridgeOptions,onSaved:finish},duplicateMatch?.reason||'Existing library match');
+  };
+
+  const addNew=async()=>{
+    if(duplicate){
+      const saved={...song,id:`songselect-${song.ccliNumber||Date.now()}-${Date.now()}`};
+      songs.push(saved);
+      persistSongs();
+      await createLibrarySongRemote(saved);
+      await finish(saved);
+      return;
+    }
+    const result=await addImportedSongToLibrary(song);
+    if(result.duplicate){
+      await appAlert(`“${result.duplicate.title}” now matches this song. Review that existing library entry instead.`,{title:'Duplicate found'});
+      finish();
+      return;
+    }
+    await finish(result.song);
+  };
+  if($('#addSongSelectBridgeCopy'))$('#addSongSelectBridgeCopy').onclick=addNew;
+  if($('#saveSongSelectBridgeImport'))$('#saveSongSelectBridgeImport').onclick=addNew;
+}
+
+window.addEventListener('message',event=>{
+  const data=event.data;
+  const fromExtension=event.origin===location.origin&&data?.type==='openlp-songselect-extension-song';
+  if(!fromExtension||data?.version!==1)return;
+  if(!songSelectBridgeAllowedForUser()){
+    appAlert('Administrator access and an enabled SongSelect Browser Bridge are required to use the browser extension.',{title:'SongSelect extension unavailable'});
+    return;
+  }
+  openSongSelectBridgeImport(data.song);
+});
+
 function openSongAddMenu(destination='library',options={}){
   openSheet(`<h2>Add song</h2>
     <p class="meta">${destination==='service'
@@ -3769,8 +5416,9 @@ function openSongAddMenu(destination='library',options={}){
         <label class="choice-line"><input type="radio" name="songSaveScope" id="songSaveScopeServiceOnly" value="service" ${options.saveToLibrary===false?'checked':''}><span><strong>Add to this service only</strong><small>Keep a complete song copy inside this service without adding it to the shared library.</small></span></label>
       </div>`:''}
     <div class="choice-grid song-import-choice-grid">
+      ${songSelectEnabled()?`<button class="choice songselect-guided-choice" id="songSelectGuidedAdd"><strong>SongSelect download</strong><span>Open SongSelect, download lyrics, then import the file.</span></button>`:''}
+      ${songSelectBridgeAllowedForUser()?`<button class="choice songselect-bridge-choice" id="songSelectBridgeAdd"><strong>SongSelect Browser <small>Experimental</small></strong><span>Use the installed Edge/Chrome extension from SongSelect.</span></button>`:''}
       <button class="choice" id="manualSongAdd"><strong>Create manually</strong><span>Enter a song yourself.</span></button>
-      <button class="choice" id="songSelectSongAdd"><strong>CCLI / SongSelect paste</strong><span>Paste copied SongSelect lyrics.</span></button>
       <button class="choice" id="songSelectFileAdd"><strong>CCLI / SongSelect file</strong><span>Choose a downloaded SongSelect/CCLI text file.</span></button>
       <button class="choice" id="openLyricsSongAdd"><strong>OpenLyrics</strong><span>Import one or more XML files.</span></button>
     </div>
@@ -3783,8 +5431,13 @@ function openSongAddMenu(destination='library',options={}){
     ...options,
     saveToLibrary:destination!=='service' || !$('#songSaveScopeServiceOnly')?.checked
   });
-  $('#manualSongAdd').onclick=()=>openManualSongAdd(destination,addSongOptions());
-  $('#songSelectSongAdd').onclick=()=>songSelectPaste(destination,addSongOptions());
+  if($('#songSelectGuidedAdd'))$('#songSelectGuidedAdd').onclick=()=>openSongSelectGuidedImport(destination,addSongOptions());
+  if($('#songSelectBridgeAdd'))$('#songSelectBridgeAdd').onclick=()=>openSongSelectExtensionLaunch(destination,addSongOptions());
+  $('#manualSongAdd').onclick=()=>{
+    const opts=addSongOptions();
+    if(opts.updateExistingSongId)editLibrarySong(opts.updateExistingSongId,opts.onBack||null);
+    else openManualSongAdd(destination,opts);
+  };
   $('#songSelectFileAdd').onclick=()=>openSongSelectFileImport(destination,addSongOptions());
   $('#openLyricsSongAdd').onclick=()=>openOpenLyricsImport(destination,addSongOptions());
 }
@@ -4149,6 +5802,15 @@ function openOpenLyricsImport(destination='library',options={}){
       <div class="import-review-list">${entries.map(x=>`<div><strong>${esc(x.song.title)}</strong><span>${x.duplicate?'Already in library · '+esc(x.duplicate.title):'Ready to import'}</span></div>`).join('')}</div>
       <div class="sheet-actions"><button class="primary" id="confirmOpenLyricsImport" ${entries.every(x=>x.duplicate)?'disabled':''}>Import new songs</button></div>`;
     if($('#confirmOpenLyricsImport'))$('#confirmOpenLyricsImport').onclick=async()=>{
+      if(options.updateExistingSongId){
+        if(entries.length!==1||!entries[0]?.song){
+          status.insertAdjacentHTML('beforeend','<p class="warning-inline"><strong>Choose one file:</strong> updating an existing song accepts one OpenLyrics song at a time.</p>');
+          return;
+        }
+        try{ await applyImportedSongToExisting(options.updateExistingSongId,entries[0].song,options.onBack||null); }
+        catch(err){ status.insertAdjacentHTML('beforeend',`<p class="warning-inline">${esc(err?.message||String(err))}</p>`); }
+        return;
+      }
       if(destination==='service' && options.saveToLibrary===false){
         const newSongs=entries.filter(x=>!x.duplicate).map(x=>x.song);
         if(options.churchSuiteItem && newSongs.length!==1){
@@ -4258,7 +5920,11 @@ function openSongSelectFileImport(destination='library',options={}){
       <button class="secondary" id="songSelectFileBack">Back</button>
     </div>`);
 
-  $('#songSelectFileBack').onclick=()=>openSongAddMenu(destination,options);
+  const back=()=>typeof options.onBack==='function'
+    ?options.onBack()
+    :openSongAddMenu(destination,options);
+  $('#songSelectFileBack').onclick=back;
+  setSheetCloseAction(back);
 
   $('#songSelectImportFile').onchange=async e=>{
     const file=e.target.files?.[0];
@@ -4300,7 +5966,12 @@ function openSongSelectFileImport(destination='library',options={}){
       ].filter(Boolean).join(' · ');
       parsed.source='songselect-file';
 
-      songSelectReview(parsed,destination,options);
+      songSelectReview(parsed,destination,{
+        ...options,
+        songSelectReviewBack:()=>typeof options.onBack==='function'
+          ?options.onBack()
+          :openSongSelectFileImport(destination,options)
+      });
     }catch(err){
       status.textContent='Could not read this file: '+(err.message||String(err));
     }
@@ -4324,6 +5995,209 @@ function songSelectPaste(destination='service',options={}){
   };
 }
 
+function songMergeText(value,fallback='None'){
+  const text=Array.isArray(value)?value.join(', '):String(value??'').trim();
+  return text||fallback;
+}
+function songMergeLyricsHtml(song){
+  const sections=Array.isArray(song?.sections)?song.sections:[];
+  if(!sections.length)return '<div class="song-merge-empty">No lyrics</div>';
+  return sections.map(section=>`
+    <section class="song-merge-lyric-section">
+      <strong>${esc(sectionName(section))}</strong>
+      <div>${esc(String(section.text||'')).replace(/\n/g,'<br>')}</div>
+    </section>`).join('');
+}
+function songMergeValuesDiffer(libraryValue,importValue,renderHtml=false){
+  if(renderHtml)return String(libraryValue||'')!==String(importValue||'');
+  const normalise=value=>{
+    if(Array.isArray(value))return value.map(x=>String(x||'').trim()).join('\n').trim();
+    return String(value??'').trim();
+  };
+  return normalise(libraryValue)!==normalise(importValue);
+}
+function songCcliMismatch(libraryValue,importValue){
+  const left=String(libraryValue||'').trim();
+  const right=String(importValue||'').trim();
+  return !!left && !!right && left!==right;
+}
+function songMergeChoiceRow(key,label,libraryValue,importValue,defaultSource='library',renderHtml=false,differentOverride=null){
+  const left=renderHtml?libraryValue:esc(songMergeText(libraryValue));
+  const right=renderHtml?importValue:esc(songMergeText(importValue));
+  const different=differentOverride===null
+    ?songMergeValuesDiffer(libraryValue,importValue,renderHtml)
+    :!!differentOverride;
+  const criticalCcli=key==='ccli'&&songCcliMismatch(libraryValue,importValue);
+  return `<section class="song-merge-row ${different?'has-difference':''} ${criticalCcli?'critical-ccli-mismatch':''}" data-merge-key="${esc(key)}">
+    <div class="song-merge-label">${esc(label)}${criticalCcli?'<span class="song-merge-critical-label">Different CCLI number</span>':different?'<span class="song-merge-diff-dot" title="Different">●</span>':''}</div>
+    <label class="song-merge-choice ${defaultSource==='library'?'selected':''}">
+      <input type="radio" name="merge-${esc(key)}" value="library" ${defaultSource==='library'?'checked':''}>
+      <span class="song-merge-source">Library</span>
+      <div class="song-merge-value">${left}</div>
+    </label>
+    <label class="song-merge-choice song-merge-import ${different?'different':''} ${defaultSource==='import'?'selected':''}">
+      <input type="radio" name="merge-${esc(key)}" value="import" ${defaultSource==='import'?'checked':''}>
+      <span class="song-merge-source">SongSelect</span>
+      <div class="song-merge-value">${right}</div>
+    </label>
+  </section>`;
+}
+function buildMergedSong(existing,incoming,scope=document){
+  const sourceFor=key=>scope.querySelector(`input[name="merge-${key}"]:checked`)?.value||'library';
+  const pick=(key,a,b)=>sourceFor(key)==='import'?structuredClone(b):structuredClone(a);
+  const merged=structuredClone(existing);
+  merged.title=pick('title',existing.title,incoming.title);
+  merged.authors=pick('authors',existing.authors||[],incoming.authors||[]);
+  merged.ccliNumber=pick('ccli',existing.ccliNumber||'',incoming.ccliNumber||'');
+  merged.copyright=pick('copyright',existing.copyright||'',incoming.copyright||'');
+  merged.verseOrder=pick('verseOrder',existing.verseOrder||'',incoming.verseOrder||'');
+  merged.musicNote=pick('musicNote',existing.musicNote||'',incoming.musicNote||'');
+  merged.sections=pick('lyrics',existing.sections||[],incoming.sections||[]);
+  merged.updatedAt=new Date().toISOString();
+  return merged;
+}
+async function saveMergedSongToExisting(existing,merged){
+  Object.assign(existing,{
+    title:merged.title,
+    authors:structuredClone(merged.authors||[]),
+    ccliNumber:String(merged.ccliNumber||''),
+    copyright:String(merged.copyright||''),
+    verseOrder:String(merged.verseOrder||''),
+    musicNote:String(merged.musicNote||''),
+    sections:structuredClone(merged.sections||[]),
+    updatedAt:new Date().toISOString()
+  });
+  persistSongs();
+  await saveLibrarySongRemote(existing);
+  return existing;
+}
+async function saveMergedSongAsCopy(merged){
+  const saved={
+    ...structuredClone(merged),
+    id:`songselect-new-${Date.now()}-${Math.floor(Math.random()*10000)}`,
+    addedAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString(),
+    source:'songselect-merge-new'
+  };
+  songs.push(saved);
+  persistSongs();
+  await createLibrarySongRemote(saved);
+  return saved;
+}
+function reviewSongSelectExistingMatch(existing,incoming,destination='library',options={},matchReason='Existing library match'){
+  const defaultFor=(localValue,importValue)=>{
+    const localEmpty=Array.isArray(localValue)?localValue.length===0:!String(localValue??'').trim();
+    const importHas=Array.isArray(importValue)?importValue.length>0:!!String(importValue??'').trim();
+    return localEmpty&&importHas?'import':'library';
+  };
+
+  openSheet(`<h2>Merge with library song</h2>
+    <div class="songselect-match-summary">
+      <strong>${esc(existing.title)}</strong>
+      <span>${esc(matchReason)}${existing.ccliNumber?` · CCLI #${esc(existing.ccliNumber)}`:''}</span>
+    </div>
+    <p class="meta">Choose which version to keep for each component. <strong>Save as new</strong> creates a separate library song; <strong>Save merged to existing</strong> updates the matched library song.</p>
+    ${songCcliMismatch(existing.ccliNumber,incoming.ccliNumber)?`
+      <div class="critical-ccli-warning">
+        <strong>Different CCLI numbers</strong>
+        <p>Library: <strong>#${esc(existing.ccliNumber)}</strong> · Imported: <strong>#${esc(incoming.ccliNumber)}</strong>. Treat these as potentially different songs/versions. <strong>Save as new</strong> is usually the safer choice unless you intentionally want to replace the existing record.</p>
+      </div>`:''}
+
+    <div class="song-merge-bulk-actions">
+      <span class="meta">Choose all components from:</span>
+      <button class="secondary compact" type="button" id="songMergeAllLibrary">Library</button>
+      <button class="secondary compact" type="button" id="songMergeAllImport">SongSelect</button>
+    </div>
+    <div class="song-merge-grid">
+      <div class="song-merge-column-head song-merge-head-label">Component</div>
+      <div class="song-merge-column-head">Library</div>
+      <div class="song-merge-column-head">SongSelect import</div>
+
+      ${songMergeChoiceRow('title','Title',existing.title,incoming.title,'library')}
+      ${songMergeChoiceRow('authors','Authors',existing.authors||[],incoming.authors||[],defaultFor(existing.authors||[],incoming.authors||[]))}
+      ${songMergeChoiceRow('ccli','CCLI number',existing.ccliNumber||'',incoming.ccliNumber||'',defaultFor(existing.ccliNumber,incoming.ccliNumber))}
+      ${songMergeChoiceRow('copyright','Copyright',existing.copyright||'',incoming.copyright||'',defaultFor(existing.copyright,incoming.copyright))}
+      ${songMergeChoiceRow('verseOrder','Verse order',existing.verseOrder||'',incoming.verseOrder||'',defaultFor(existing.verseOrder,incoming.verseOrder))}
+      ${songMergeChoiceRow('musicNote','Music note',existing.musicNote||'',incoming.musicNote||'',defaultFor(existing.musicNote,incoming.musicNote))}
+      ${songMergeChoiceRow('lyrics','Lyrics / sections',songMergeLyricsHtml(existing),songMergeLyricsHtml(incoming),
+        defaultFor(existing.sections||[],incoming.sections||[]),'html',
+        JSON.stringify(existing.sections||[])!==JSON.stringify(incoming.sections||[]))}
+    </div>
+
+    <div class="sheet-actions song-merge-actions">
+      <button class="secondary" id="songImportCompareBack">Back</button>
+      <button class="secondary" id="songImportUseExisting">Use existing unchanged</button>
+      <button class="secondary" id="songImportSaveCopy">Save as new</button>
+      <button class="primary" id="songImportSaveMerged">Save merged to existing</button>
+    </div>`);
+
+  const back=()=>typeof options.songSelectReviewBack==='function'
+    ?options.songSelectReviewBack()
+    :typeof options.onBack==='function'
+      ?options.onBack()
+      :songSelectReview(incoming,destination,options);
+  $('#songImportCompareBack').onclick=back;
+  setSheetCloseAction(back);
+
+  const selectAllMergeSource=source=>{
+    body.querySelectorAll(`.song-merge-choice input[type="radio"][value="${source}"]`).forEach(radio=>{
+      radio.checked=true;
+      radio.closest('.song-merge-row')?.querySelectorAll('.song-merge-choice').forEach(label=>label.classList.remove('selected'));
+      radio.closest('.song-merge-choice')?.classList.add('selected');
+    });
+  };
+  $('#songMergeAllLibrary').onclick=()=>selectAllMergeSource('library');
+  $('#songMergeAllImport').onclick=()=>selectAllMergeSource('import');
+
+  body.querySelectorAll('.song-merge-choice input[type="radio"]').forEach(radio=>{
+    radio.onchange=()=>{
+      radio.closest('.song-merge-row')?.querySelectorAll('.song-merge-choice').forEach(label=>label.classList.remove('selected'));
+      radio.closest('.song-merge-choice')?.classList.add('selected');
+    };
+  });
+
+  const finishWithSong=async song=>{
+    if(typeof options.onSaved==='function'){
+      await options.onSaved(song);
+      return;
+    }
+    if(destination==='service'){
+      addLibrarySongToCurrentService(song,'SongSelect merge');
+      songPreview(song.id);
+    }else{
+      openSongLibrary();
+    }
+  };
+
+  $('#songImportUseExisting').onclick=()=>finishWithSong(existing);
+
+  $('#songImportSaveCopy').onclick=async()=>{
+    const btn=$('#songImportSaveCopy');
+    btn.disabled=true; btn.textContent='Saving…';
+    try{
+      const merged=buildMergedSong(existing,incoming,body);
+      const copy=await saveMergedSongAsCopy(merged);
+      await finishWithSong(copy);
+    }catch(err){
+      btn.disabled=false; btn.textContent='Save as new';
+      await appAlert(err?.message||String(err),{title:'Could not save new song'});
+    }
+  };
+
+  $('#songImportSaveMerged').onclick=async()=>{
+    const btn=$('#songImportSaveMerged');
+    btn.disabled=true; btn.textContent='Saving…';
+    try{
+      const merged=buildMergedSong(existing,incoming,body);
+      await saveMergedSongToExisting(existing,merged);
+      await finishWithSong(existing);
+    }catch(err){
+      btn.disabled=false; btn.textContent='Save merged to existing';
+      await appAlert(err?.message||String(err),{title:'Could not update song'});
+    }
+  };
+}
+
 function songSelectReview(s,destination='service',options={}){
   openSheet(`<h2>${esc(s.title)}</h2>
     <p class="meta">${s.authors.length?esc(s.authors.join(', ')):'Author not detected'}${s.ccliNumber?` · CCLI #${esc(s.ccliNumber)}`:''}</p>
@@ -4331,26 +6205,26 @@ function songSelectReview(s,destination='service',options={}){
     <div class="field"><label>Usual verse order</label><input id="importOrder" value="${esc(s.verseOrder)}"></div>
     <div class="field"><label>Usual music note for run sheet</label><input id="importMusicNote" placeholder="e.g. Usually in D"></div>
     ${s.copyright?`<p class="song-copyright">${esc(s.copyright)}</p>`:''}
-    <div class="sheet-actions"><button class="secondary" id="backToPaste">Back</button><button class="primary" id="saveImportedSong">${destination==='service'?'Add to library & service':'Add to Song Library'}</button></div>`);
-  $('#backToPaste').onclick=()=>songSelectPaste(destination,options);
+    <div class="sheet-actions"><button class="secondary" id="backToPaste">Back</button><button class="primary" id="saveImportedSong">${destination==='service'?'Add to library & service':'Add or merge to library'}</button></div>`);
+  $('#backToPaste').onclick=()=>typeof options.songSelectReviewBack==='function'
+    ?options.songSelectReviewBack()
+    :songSelectPaste(destination,options);
   $('#saveImportedSong').onclick=async()=>{
     s.verseOrder=$('#importOrder').value.trim();
     s.musicNote=$('#importMusicNote').value.trim();
     s.source='songselect';
     s.classifications=defaultSongClassifications();
+    if(options.updateExistingSongId){
+      try{ await applyImportedSongToExisting(options.updateExistingSongId,s,options.onBack||null); }
+      catch(err){ await appAlert(err?.message||String(err),{title:'Could not update song'}); }
+      return;
+    }
     const duplicate=options.saveToLibrary===false?null:songDuplicateMatch(s);
     if(duplicate){
-      openSheet(`<h2>Song already in library</h2>
-        <div class="warning-card"><strong>${esc(duplicate.title)}</strong><p>A matching CCLI number or title already exists.</p></div>
-        <div class="sheet-actions"><button class="secondary" id="duplicateImportBack">Back</button><button class="primary" id="openDuplicateImportedSong">Open existing song</button></div>`);
-      $('#duplicateImportBack').onclick=()=>songSelectReview(s,destination,options);
-      $('#openDuplicateImportedSong').onclick=async()=>{
-        if(typeof options.onSaved==='function'){
-          await options.onSaved(duplicate);
-          return;
-        }
-        destination==='service'?songPreview(duplicate.id):editLibrarySong(duplicate.id);
-      };
+      const sameCcli=!!String(s.ccliNumber||'').trim() &&
+        String(s.ccliNumber||'').trim()===String(duplicate.ccliNumber||'').trim();
+      const matchReason=sameCcli?'Same CCLI number':'Matching title';
+      reviewSongSelectExistingMatch(duplicate,s,destination,options,matchReason);
       return;
     }
     if(destination==='service' && options.saveToLibrary===false){
@@ -4507,11 +6381,20 @@ function enableImageMediaReorder(container,item,markDirty){
 function editItem(id){
   const x=state.items.find(i=>String(i.id)===String(id));
   const originalItemTitle=x?.title||'';
+  const originalChurchSuiteComparable=x?.churchSuiteSourceId?JSON.stringify(churchSuiteComparableItem(x)):null;
+  const wasChurchSuiteLocalChanged=!!x?.churchSuiteLocalChanged;
     const librarySong=x.type==='song' ? songs.find(s=>String(s.id)===String(x.songId)) : null;
     const serviceOnlySong=x.type==='song'&&x.serviceSong ? x.serviceSong : null;
+  const serviceSongCcli=String(librarySong?.ccliNumber||serviceOnlySong?.ccliNumber||'').trim();
   openSheet(`<h2>${esc(x.title)}</h2>
     <div class="field"><label>Title</label><input id="editTitle" value="${esc(x.title)}"></div>
+    ${x.type==='song'?`<div class="service-song-basic-meta">${serviceSongCcli?`<span><strong>CCLI</strong> #${esc(serviceSongCcli)}</span>`:'<span><strong>CCLI</strong> Not recorded</span>'}</div>`:''}
     <div class="field"><label>Person / leader</label><input id="editPerson" value="${esc(x.person||'')}"></div>
+    ${x.type==='song'&&churchSuitePeopleImportEnabled()&&Array.isArray(x.churchSuitePeople)&&x.churchSuitePeople.length?`
+      <div class="churchsuite-song-team-full">
+        <strong>ChurchSuite team</strong>
+        <span>${esc(churchSuitePeopleNames(x).join(', '))}</span>
+      </div>`:''}
     ${x.type==='song'&&librarySong?`
       <div class="service-song-classification-summary">
         <div>
@@ -4539,6 +6422,7 @@ function editItem(id){
       </div>
     `:''}
     ${x.type==='song'?`<div class="field"><label>Verse order for this service</label><input id="editVerse" value="${esc(x.verse||'')}"></div>
+      ${librarySong?`<label class="toggle"><span><strong>Make this the library default verse order</strong><small>Future services will start with this order. Existing services are not changed.</small></span><input id="saveUsualVerseOrder" type="checkbox"></label>`:''}
       <div class="field"><label>Music note for printed run sheet</label><input id="editMusicNote" value="${esc(x.musicNote||'')}" placeholder="e.g. Usually in D"></div>
       ${librarySong?`<div class="toggle"><span>Make music note the new usual note</span><input id="saveUsualNote" type="checkbox"></div>`:''}`:''}
     ${(x.type==='images'||x.type==='sermon-images')?`
@@ -4590,7 +6474,7 @@ function editItem(id){
       ${x.churchSuiteSourceId?`<label class="toggle"><span>Ignore Bible projection for this service</span><input id="editBibleIgnore" type="checkbox" ${x.ignoreBible?'checked':''}></label>
       <p class="meta">Keep the ChurchSuite Bible-reading item on the run sheet without requiring a projected Bible item.</p>`:''}
     `:''}
-    ${churchSuiteEnabled()&&x.churchSuiteSourceId?`<label class="toggle churchsuite-retain-toggle"><span><strong>Keep local changes after ChurchSuite sync</strong><small>Recommended. Future ChurchSuite syncs keep this edited Planner item instead of replacing it.</small></span><input id="editRetainChurchSuite" type="checkbox" ${x.retainOnChurchSuiteSync!==false?'checked':''}></label>`:''}
+    ${churchSuiteEnabled()&&x.churchSuiteSourceId?`<label class="toggle churchsuite-retain-toggle"><span><strong>Keep local changes after ChurchSuite sync</strong><small>This item inherited its default from the ChurchSuite Type mapping. Change it here only when this item needs different behaviour.</small></span><input id="editRetainChurchSuite" type="checkbox" ${(typeof x.retainOnChurchSuiteSync==='boolean'?x.retainOnChurchSuiteSync:churchSuiteKeepLocalPolicyForType(x.churchSuiteType))?'checked':''}></label>`:''}
     <div class="field"><label>Run-sheet notes</label><textarea id="editNotes">${esc(x.notes||'')}</textarea></div>
     <div class="field"><label>Last changed</label><div>${esc(x.changed)} by ${esc(x.by)}</div></div>
     <div class="sheet-actions"><button class="secondary" id="saveItemStay" disabled>Save changes</button><button class="primary" id="saveItem">Done</button><button class="danger" id="deleteItem">Delete</button></div>`);
@@ -4638,6 +6522,7 @@ function editItem(id){
     try{
       await renamePlannerMediaAsset(asset.id,name.trim());
       asset.originalName=name.trim();
+      markChurchSuiteItemLocalChanged(x);
       persistPlanner();
       await saveServiceItem(x);
       editItem(id);
@@ -4687,6 +6572,7 @@ function editItem(id){
           else x.media=result.assets||[];
           x.ignoreImages=false;x.ignoreVideo=false;x.projected=true;
           updateMediaItemDetail(x);
+          markChurchSuiteItemLocalChanged(x);
           persistPlanner();saveServiceItem(x);
           markServiceEdited(`added ${x.type} from OpenLP Planner library`);
           appendAudit('added library media',x.title);
@@ -4865,14 +6751,46 @@ function editItem(id){
       return;
     }
     x.title=$('#editTitle').value; x.person=$('#editPerson').value; x.notes=$('#editNotes').value;
-    if(churchSuiteEnabled()&&x.churchSuiteSourceId&&$('#editRetainChurchSuite')) x.retainOnChurchSuiteSync=!!$('#editRetainChurchSuite').checked;
+    if(churchSuiteEnabled()&&x.churchSuiteSourceId&&$('#editRetainChurchSuite')){
+      const selectedKeepLocal=!!$('#editRetainChurchSuite').checked;
+      const inheritedKeepLocal=churchSuiteKeepLocalPolicyForType(x.churchSuiteType);
+      x.retainOnChurchSuiteSync=selectedKeepLocal;
+      if(selectedKeepLocal===inheritedKeepLocal)delete x.churchSuiteKeepLocalOverride;
+      else x.churchSuiteKeepLocalOverride=selectedKeepLocal;
+    }
     if(x.type==='song'){
       x.verse=$('#editVerse').value.trim();
       x.musicNote=$('#editMusicNote').value.trim();
+
+      if(librarySong && $('#saveUsualVerseOrder')?.checked){
+        const oldDefault=String(librarySong.verseOrder||'').trim();
+        const newDefault=String(x.verse||'').trim();
+        const confirmed=await appConfirm(
+          `Change the shared library default verse order for “${librarySong.title}”?
+
+Current: ${oldDefault||'No saved order'}
+New: ${newDefault||'No saved order'}
+
+Future services will start with the new order. Existing services will not be changed.`,
+          {
+            title:'Change library verse order?',
+            confirmLabel:'Make library default',
+            cancelLabel:'Keep service only'
+          }
+        );
+        if(confirmed){
+          librarySong.verseOrder=newDefault;
+          persistSongs();
+          await saveLibrarySongRemote(librarySong);
+        }else{
+          $('#saveUsualVerseOrder').checked=false;
+        }
+      }
+
       if(librarySong && $('#saveUsualNote')?.checked){
         librarySong.musicNote=x.musicNote;
         persistSongs();
-        saveLibrarySongRemote(librarySong);
+        await saveLibrarySongRemote(librarySong);
       }
     }
     if(x.type==='images'||x.type==='sermon-images'){
@@ -5031,6 +6949,10 @@ function editItem(id){
     if(x.type==='song' && x.title!==originalItemTitle){
       markChurchSuiteOutOfSync('Song title changed locally');
     }
+    if(x.churchSuiteSourceId){
+      const changedContent=originalChurchSuiteComparable!==JSON.stringify(churchSuiteComparableItem(x));
+      x.churchSuiteLocalChanged=wasChurchSuiteLocalChanged||changedContent;
+    }
     x.changed='just now';x.by=currentEditor();
     persistPlanner();
     await saveServiceItem(x);
@@ -5089,10 +7011,15 @@ function editItem(id){
 $('#serviceTitle').onclick=()=>openServiceSwitcher();
 $('#serviceTitle').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openServiceSwitcher();}};
 if($('#currentServiceTemplateBtn'))$('#currentServiceTemplateBtn').onclick=()=>openServiceTemplateOverride(currentService());
-if($('#saveCurrentServiceTemplateBtn'))$('#saveCurrentServiceTemplateBtn').onclick=()=>saveServiceAsTemplate(currentService());
-$('#settingsBtn').onclick=()=>openSettings();
+if($('#settingsBtn'))$('#settingsBtn').onclick=()=>openSettings();
+if($('#headerSettingsBtn'))$('#headerSettingsBtn').onclick=()=>openSettings();
+if($('#headerProfileBtn'))$('#headerProfileBtn').onclick=()=>openProfile();
 $('#servicesLibraryBtn').onclick=()=>openLibraryHub();
-$('.avatar').onclick=()=>openProfile();
+if($('#dashboardBtn'))$('#dashboardBtn').onclick=openDashboard;
+if($('#servicesDashboardBtn'))$('#servicesDashboardBtn').onclick=openDashboard;
+if($('#dashboardFullPlannerBtn'))$('#dashboardFullPlannerBtn').onclick=openServicesPage;
+if($('#dashboardLibraryBtn'))$('#dashboardLibraryBtn').onclick=openSongLibrary;
+
 
 
 function serviceProjectionReadiness(service){
@@ -5212,7 +7139,7 @@ function serviceProgressState(service){
 
 function serviceProgressBadge(service){
   const state=serviceProgressState(service);
-  return `<span class="service-progress service-progress-${state.key}">${esc(state.label)}</span>`;
+  return `<span class="service-progress service-progress-${state.key} transient-label" data-transient-label="${esc(state.label)}" aria-label="${esc(state.label)}" title="${esc(state.label)}"><span class="progress-dot" aria-hidden="true"></span><span class="transient-label-text">${esc(state.label)}</span></span>`;
 }
 function serviceItemDetailForDisplay(item){
   if(!item)return '';
@@ -5229,19 +7156,181 @@ function rememberLastScreen(screen){
   try{localStorage.setItem(LAST_SCREEN_KEY,screen);}catch(_){}
 }
 function lastScreen(){
-  try{return localStorage.getItem(LAST_SCREEN_KEY)||'planner';}catch(_){return 'planner';}
+  try{return localStorage.getItem(LAST_SCREEN_KEY)||'dashboard';}catch(_){return 'dashboard';}
 }
 
 let selectedServiceIds=new Set();
 
-function openServicesPage(){
+function dashboardAccessAllowed(){
+  return Number(authenticatedUser?.accessLevel||0)>=2;
+}
+function dashboardWeekBounds(reference=new Date()){
+  const d=new Date(reference);
+  d.setHours(0,0,0,0);
+  const weekday=d.getDay();
+  const mondayOffset=(weekday+6)%7;
+  const start=new Date(d);start.setDate(d.getDate()-mondayOffset);
+  const end=new Date(start);end.setDate(start.getDate()+6);end.setHours(23,59,59,999);
+  return {start,end};
+}
+function dashboardServiceDate(service){
+  const d=service?.dateISO?new Date(`${service.dateISO}T12:00:00`):null;
+  return d&&!Number.isNaN(d.getTime())?d:null;
+}
+function dashboardServiceCard(service,csEnabled){
+  const progress=serviceProgressState(service);
+  const readiness=serviceProjectionReadiness(service);
+  const templateName=serviceTemplateById(defaultTemplateIdForService(service))?.name||'No template';
+  const planUrl=csEnabled?actualChurchSuitePlanUrl(service):'';
+  return `<article class="dashboard-service-card">
+    <div class="dashboard-service-main">
+      <div>
+        <small>${esc(formatServiceDate(service.dateISO||''))}</small>
+        <strong>${esc(service.title||'Service')}</strong>
+      </div>
+      <span class="dashboard-status dashboard-status-${esc(progress.key)}">${esc(progress.label)}</span>
+    </div>
+    <div class="dashboard-service-meta">
+      <span>${readiness.total?`${readiness.ready}/${readiness.total} projection ready`:'No projection items'}</span>
+      <span>${esc(templateName)}</span>
+    </div>
+    <div class="dashboard-service-actions">
+      <button class="secondary compact" type="button" data-dashboard-edit-service="${esc(String(service.id))}">Edit</button>
+      ${csEnabled&&hasChurchSuitePlanReference(service)?`<button class="secondary compact dashboard-express-sync" type="button" data-dashboard-express-sync="${esc(String(service.id))}">Express Sync</button>`:''}
+      <button class="primary compact" type="button" data-dashboard-download-service="${esc(String(service.id))}"><span aria-hidden="true">⇩</span> OpenLP</button>
+      ${csEnabled&&planUrl?`<a class="secondary compact button-link" href="${esc(planUrl)}" target="_blank" rel="noopener">ChurchSuite ↗</a>`:''}
+    </div>
+  </article>`;
+}
+function dashboardHideOtherScreens(){
+  document.querySelector('main.shell').hidden=true;
+  $('#servicesPage').hidden=true;
+  $('#dashboardPage').hidden=false;
+  $('#plannerHeaderNav').hidden=true;
+  $('#servicesHeaderNav').hidden=true;
+  $('#dashboardHeaderNav').hidden=false;
+  $('#plannerFooter').hidden=true;
+  $('#servicesFooter').hidden=true;
+  document.body.classList.remove('services-page-open');
+  document.body.classList.add('dashboard-page-open');
+}
+async function openDashboard(){
+  if(!dashboardAccessAllowed()){
+    await appAlert('Planner access is required for Home.');
+    return;
+  }
+  closeAppMenus();
+  closeSheetSafely();
+  if(remoteAvailable)await refreshSharedPlannerState();
+  rememberLastScreen('dashboard');
+  dashboardHideOtherScreens();
+  $('#plannerContextLabel').textContent='Home';
+  renderDashboard();
+}
+function renderDashboard(){
+  const root=$('#dashboardPageInner');
+  if(!root)return;
+  const csEnabled=churchSuiteEnabled();
+  document.body.classList.toggle('dashboard-with-churchsuite',csEnabled);
+  const {start,end}=dashboardWeekBounds();
+  const services=[...(state.services||[])].sort((a,b)=>String(a.dateISO||'').localeCompare(String(b.dateISO||'')));
+  const thisWeek=services.filter(service=>{
+    const date=dashboardServiceDate(service);
+    return date&&date>=start&&date<=end;
+  });
+  const future=services.filter(service=>{
+    const date=dashboardServiceDate(service);
+    return date&&date>end;
+  }).slice(0,12);
+  const types=regularServiceTypes();
+  const admin=Number(authenticatedUser?.accessLevel||0)>=3;
+
+  root.innerHTML=`<div class="dashboard-head ${csEnabled?'churchsuite-enabled':''}">
+      <div><span class="dashboard-kicker">${csEnabled?'Planner + ChurchSuite':'Planner'}</span><h1>Home</h1></div>
+      <div class="dashboard-quick-actions">
+        <button class="secondary" id="dashboardSongLibraryAction">Song Library</button>
+        <button class="primary" id="dashboardPlannerAction">Full planner</button>
+      </div>
+    </div>
+
+    <section class="dashboard-section">
+      <div class="dashboard-section-head"><div><h2>This week</h2><span>${thisWeek.length?`${thisWeek.length} service${thisWeek.length===1?'':'s'}`:'No services this week'}</span></div></div>
+      <div class="dashboard-service-grid">
+        ${thisWeek.length?thisWeek.map(service=>dashboardServiceCard(service,csEnabled)).join(''):'<div class="dashboard-empty">No services scheduled this week.</div>'}
+      </div>
+      ${future.length?`<details class="dashboard-more-services"><summary>More upcoming services</summary><div class="dashboard-service-grid">${future.map(service=>dashboardServiceCard(service,csEnabled)).join('')}</div></details>`:''}
+    </section>
+
+    <section class="dashboard-section dashboard-regular-services">
+      <div class="dashboard-section-head">
+        <div><h2>Regular services</h2><span>Default templates${csEnabled?' and ChurchSuite setup':''}</span></div>
+        ${admin?`<button class="secondary compact" id="dashboardEditServiceSettings">Edit details</button>`:''}
+      </div>
+      <div class="dashboard-type-list">
+        ${types.map(type=>{
+          const templateId=String(state.settings.defaultTemplateByServiceType?.[String(type.id)]||'');
+          const template=serviceTemplateById(templateId);
+          const mapping=csEnabled?churchSuiteServiceMappings().filter(m=>String(m.plannerTypeId)===String(type.id)).map(m=>m.churchSuiteName):[];
+          return `<div class="dashboard-type-row">
+            <span class="dashboard-type-colour" style="--dashboard-type-colour:${esc(type.colour||'#66798d')}"></span>
+            <div><strong>${esc(type.name)}</strong><small>Default template: ${esc(template?.name||'None')}${csEnabled&&mapping.length?` · ChurchSuite: ${esc(mapping.join(', '))}`:''}</small></div>
+            ${template?`<button class="secondary compact" data-dashboard-edit-template="${esc(String(template.id))}">Edit template</button>`:''}
+          </div>`;
+        }).join('')}
+      </div>
+      ${csEnabled&&admin?`<button class="text-action dashboard-cs-settings-link" id="dashboardChurchSuiteSettings">ChurchSuite sync settings</button>`:''}
+    </section>`;
+
+  $('#dashboardSongLibraryAction').onclick=openSongLibrary;
+  $('#dashboardPlannerAction').onclick=openServicesPage;
+  if($('#dashboardEditServiceSettings'))$('#dashboardEditServiceSettings').onclick=()=>openSettings('services');
+  if($('#dashboardChurchSuiteSettings'))$('#dashboardChurchSuiteSettings').onclick=()=>openSettings('extensions');
+
+  root.querySelectorAll('[data-dashboard-edit-template]').forEach(btn=>btn.onclick=()=>openServiceTemplateEditor(btn.dataset.dashboardEditTemplate,'dashboard'));
+  root.querySelectorAll('[data-dashboard-edit-service]').forEach(btn=>btn.onclick=()=>{
+    const id=String(btn.dataset.dashboardEditService);
+    const service=state.services.find(row=>String(row.id)===id);
+    if(!service)return;
+    state.activeServiceId=id;
+    persistPlanner();
+    $('#dashboardPage').hidden=true;
+    document.body.classList.remove('dashboard-page-open','dashboard-with-churchsuite');
+    $('#dashboardHeaderNav').hidden=true;
+    document.querySelector('main.shell').hidden=false;
+    $('#plannerHeaderNav').hidden=false;
+    $('#plannerFooter').hidden=false;
+    $('#plannerContextLabel').textContent='Service Planner';
+    rememberLastScreen('planner');
+    render();
+  });
+  root.querySelectorAll('[data-dashboard-download-service]').forEach(btn=>btn.onclick=()=>{
+    const service=state.services.find(row=>String(row.id)===String(btn.dataset.dashboardDownloadService));
+    if(!service)return;
+    state.activeServiceId=service.id;
+    persistPlanner();
+    openExportOpenLP();
+  });
+  root.querySelectorAll('[data-dashboard-express-sync]').forEach(btn=>btn.onclick=()=>{
+    const service=state.services.find(row=>String(row.id)===String(btn.dataset.dashboardExpressSync));
+    if(service)expressChurchSuiteSync(service,'dashboard');
+  });
+}
+
+async function openServicesPage(){
+  if(remoteAvailable)await refreshSharedPlannerState();
+  openLPOnlyView=false;
+  document.body.classList.remove('openlp-only-view');
   rememberLastScreen('services');
   document.querySelector('main.shell').hidden=true;
+  $('#dashboardPage').hidden=true;
   $('#servicesPage').hidden=false;
   $('#plannerHeaderNav').hidden=true;
+  $('#dashboardHeaderNav').hidden=true;
   $('#servicesHeaderNav').hidden=false;
+  $('#plannerContextLabel').textContent='Services';
   $('#plannerFooter').hidden=true;
   $('#servicesFooter').hidden=false;
+  document.body.classList.remove('dashboard-page-open','dashboard-with-churchsuite');
   document.body.classList.add('services-page-open');
   renderServicesPage();
 }
@@ -5252,6 +7341,7 @@ function closeServicesPage(){
     return;
   }
   rememberLastScreen('planner');
+  $('#plannerContextLabel').textContent='Service Planner';
   $('#servicesPage').hidden=true;
   document.querySelector('main.shell').hidden=false;
   $('#plannerHeaderNav').hidden=false;
@@ -5282,6 +7372,8 @@ function renderServicesPage(){
   };
 
   $('#servicesSyncChurchSuiteBtn').hidden=!churchSuiteAutoEnabled();
+  const servicesFooter=$('#servicesFooter');
+  if(servicesFooter)servicesFooter.classList.toggle('churchsuite-preferred',!$('#servicesSyncChurchSuiteBtn').hidden);
 
   const publishedPlansBtn=$('#servicesPublishedPlansBtn');
   if(publishedPlansBtn){
@@ -5293,43 +7385,108 @@ function renderServicesPage(){
     publishedPlansBtn.href=`/${directoryPath||'churchsuite-plans'}`;
   }
   const csEnabled=churchSuiteEnabled();
-  const subtitle=$('.services-page-subtitle');
-  if(subtitle){
-    subtitle.textContent=csEnabled
-      ?'Plan ahead, review readiness and manage ChurchSuite links.'
-      :'Plan ahead and review service readiness.';
-  }
+  const context=$('#plannerContextLabel');if(context)context.textContent=csEnabled?'Services · ChurchSuite':'Services';
+  document.body.classList.toggle('churchsuite-mode',csEnabled);
   $('#servicesPage').querySelectorAll('[data-cs-column]').forEach(el=>el.hidden=!csEnabled);
 
-  $('#servicesTableBody').innerHTML=services.map(s=>`
-    <tr data-service-row="${esc(s.id)}">
+  $('#servicesTableBody').innerHTML=services.map(s=>{
+    const d=serviceDateParts(s);
+    const viewUrl=actualChurchSuitePlanUrl(s);
+    return `<tr data-service-row="${esc(s.id)}">
       <td class="service-select-cell"><input type="checkbox" data-select-service="${esc(s.id)}" ${selectedServiceIds.has(String(s.id))?'checked':''} aria-label="Select ${esc(s.title)}"></td>
-      <td><button class="services-open-service" data-open-service="${esc(s.id)}"><strong>${esc(s.title)}</strong><small>${s.kind==='event'?'One-off event':'Service'}</small></button></td>
-      <td>${esc(s.date||'')}</td><td>${serviceProgressBadge(s)}</td>
-      <td data-cs-column>${churchSuiteEnabled()?(
-        actualChurchSuitePlanUrl(s)
-          ?`<a class="secondary compact churchsuite-view-plan" href="${esc(actualChurchSuitePlanUrl(s))}" target="_blank" rel="noopener">View the ChurchSuite Plan</a> <button class="secondary compact" data-sync-cs="${esc(s.id)}">Sync ChurchSuite</button>`
-          :hasChurchSuitePlanReference(s)
-            ?`<span>Linked</span> · <button class="text-action" data-sync-cs="${esc(s.id)}">Sync</button>`
-            :`<span class="meta">Not linked</span>`
-      ):''}</td>
-      <td data-cs-column>${churchSuiteEnabled()?`<div class="churchsuite-service-times"><span><small>ChurchSuite updated</small>${esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated))}</span><span><small>Last synced</small>${esc(formatChurchSuiteSynced(s.churchSuiteLastSynced))}</span></div>`:''}</td>
-      <td><div class="service-row-actions"><button class="secondary compact service-edit-btn" data-open-service="${esc(s.id)}">Open</button><button class="secondary compact" data-save-template="${esc(s.id)}">Save template</button><button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button></div></td>
-    </tr>`).join('');
-  $('#servicesMobileList').innerHTML=services.map(s=>`
-    <article class="service-mobile-card" data-service-row="${esc(s.id)}">
-      <div class="service-mobile-head">
+      <td class="service-name-cell"><div class="service-name-with-type">${serviceTypeIcon(s)}<button class="services-open-service" data-open-service="${esc(s.id)}"><strong>${esc(s.title)}</strong></button></div></td>
+      <td class="service-date-cell"><span class="service-day">${esc(d.day)}</span><strong>${esc(d.date)}</strong><small>${esc(d.year)}</small></td>
+      <td class="service-progress-cell">${serviceProgressBadge(s)}</td>
+      <td data-cs-column class="churchsuite-combined-cell">${csEnabled?`
+        <div class="churchsuite-compact-status">
+          <span class="cs-action-stack">${viewUrl?`<button type="button" class="cs-icon-action transient-label confirm-tap-action two-step-action" data-two-step-action="1" data-confirm-action="view" data-confirm-url="${esc(viewUrl)}" data-transient-label="Tap again to open ChurchSuite plan" aria-label="ChurchSuite updated; tap twice to open plan" title="ChurchSuite updated"><span aria-hidden="true">CS</span><span class="transient-label-text">Tap again to open ChurchSuite plan</span></button>`:`<span class="cs-icon-muted" title="No ChurchSuite plan link">CS</span>`}<span class="cs-date">${esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated))}</span></span>
+          ${hasChurchSuitePlanReference(s)?`<span class="cs-action-stack"><button type="button" class="cs-icon-action transient-label confirm-tap-action two-step-action ${s.churchSuiteOutOfSync?'sync-attention':''}" data-two-step-action="1" data-confirm-action="sync" data-service-id="${esc(s.id)}" data-transient-label="Tap again to resync ChurchSuite" aria-label="Last synced; tap twice to resync" title="Last synced"><span aria-hidden="true">↻</span><span class="transient-label-text">Tap again to resync ChurchSuite</span></button><span class="cs-date">${esc(formatChurchSuiteSynced(s.churchSuiteLastSynced))}</span></span>`:''}
+        </div>`:''}</td>
+      <td class="service-actions-cell"><button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button></td>
+    </tr>`;
+  }).join('');
+  $('#servicesMobileList').innerHTML=services.map(s=>{
+    const d=serviceDateParts(s);const viewUrl=actualChurchSuitePlanUrl(s);
+    return `<article class="service-mobile-card" data-service-row="${esc(s.id)}">
+      <div class="service-mobile-head tidy-mobile-head">
         <input class="service-mobile-select" type="checkbox" data-select-service="${esc(s.id)}" ${selectedServiceIds.has(String(s.id))?'checked':''} aria-label="Select ${esc(s.title)}">
-        <button class="services-open-service" data-open-service="${esc(s.id)}"><strong>${esc(s.title)}</strong><small>${esc(s.date||'')}</small></button>
-        <div class="service-row-actions"><button class="secondary compact service-edit-btn" data-open-service="${esc(s.id)}">Open</button><button class="secondary compact" data-save-template="${esc(s.id)}">Save template</button><button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button></div>
+        ${serviceTypeIcon(s)}
+        <button class="services-open-service" data-open-service="${esc(s.id)}"><strong>${esc(s.title)}</strong><span class="mobile-date-major">${esc(d.day)} · ${esc(d.date)} <small>${esc(d.year)}</small></span></button>
+        ${serviceProgressBadge(s)}
+        <button class="item-delete service-delete-btn" data-page-delete="${esc(s.id)}" title="Delete service" aria-label="Delete ${esc(s.title)}"><svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg></button>
       </div>
-      <div class="service-mobile-grid">
-        <span><small>Progress</small>${serviceProgressBadge(s)}</span>
-        ${churchSuiteEnabled()?`<span><small>ChurchSuite updated</small>${esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated))}</span><span><small>Last synced</small>${esc(formatChurchSuiteSynced(s.churchSuiteLastSynced))}</span>`:`<span><small>Updated</small>${esc(s.lastEditedAt?formatLastEdited(s.lastEditedAt):'Not yet')}</span>`}
-        ${churchSuiteEnabled()?`<span class="mobile-wide churchsuite-mobile-field"><small>ChurchSuite</small>${actualChurchSuitePlanUrl(s)?`<a class="secondary compact churchsuite-view-plan" href="${esc(actualChurchSuitePlanUrl(s))}" target="_blank" rel="noopener">View the ChurchSuite Plan</a>`:'Not linked'}</span>
-        ${hasChurchSuitePlanReference(s)?`<span class="mobile-wide churchsuite-mobile-actions"><button class="secondary compact" data-sync-cs="${esc(s.id)}">Sync ChurchSuite</button></span>`:''}`:''}
-      </div>
-    </article>`).join('');
+      ${csEnabled?`<div class="churchsuite-mobile-compact">
+        ${viewUrl?`<span class="cs-action-stack"><button type="button" class="cs-icon-action transient-label confirm-tap-action two-step-action" data-two-step-action="1" data-confirm-action="view" data-confirm-url="${esc(viewUrl)}" data-transient-label="Tap again to open ChurchSuite plan" aria-label="ChurchSuite updated; tap twice to open plan"><span aria-hidden="true">CS</span><span class="transient-label-text">Tap again to open ChurchSuite plan</span></button><span class="cs-date">${esc(formatChurchSuiteUpdated(s.churchSuiteLastUpdated))}</span></span>`:''}
+        ${hasChurchSuitePlanReference(s)?`<span class="cs-action-stack"><button type="button" class="cs-icon-action transient-label confirm-tap-action two-step-action ${s.churchSuiteOutOfSync?'sync-attention':''}" data-two-step-action="1" data-confirm-action="sync" data-service-id="${esc(s.id)}" data-transient-label="Tap again to resync ChurchSuite" aria-label="Last synced; tap twice to resync"><span aria-hidden="true">↻</span><span class="transient-label-text">Tap again to resync ChurchSuite</span></button><span class="cs-date">${esc(formatChurchSuiteSynced(s.churchSuiteLastSynced))}</span></span>`:''}
+      </div>`:''}
+    </article>`;
+  }).join('');
+  wireTransientLabels($('#servicesPage'));
+  $('#servicesPage').querySelectorAll('[data-service-type-edit]').forEach(btn=>{
+    let armed=false,timer=null;
+    btn.onclick=e=>{
+      e.preventDefault();e.stopPropagation();
+      if(!armed){
+        armed=true;btn.classList.add('tap-armed');
+        flashTransientLabel(btn,btn.dataset.transientLabel||'Tap again to change service type',3500);
+        clearTimeout(timer);timer=setTimeout(()=>{armed=false;btn.classList.remove('tap-armed','show-label');btn.blur?.();},3500);
+        return;
+      }
+      clearTimeout(timer);armed=false;btn.classList.remove('tap-armed','show-label');btn.blur?.();
+      const svc=state.services.find(x=>String(x.id)===String(btn.dataset.serviceTypeEdit));
+      if(svc)openServiceTypeEditor(svc);
+    };
+  });
+  $('#servicesPage').querySelectorAll('.confirm-tap-action').forEach(btn=>{
+    let armed=false,timer=null;
+
+    const reset=()=>{
+      clearTimeout(timer);
+      armed=false;
+      btn.classList.remove('tap-armed','show-label','express-armed');
+      btn.blur?.();
+    };
+
+    btn.onclick=e=>{
+      e.preventDefault();
+      e.stopPropagation();
+
+      if(btn.dataset.confirmAction==='sync'){
+        const svc=state.services.find(x=>String(x.id)===String(btn.dataset.serviceId));
+        if(!svc)return;
+
+        if(!armed){
+          armed=true;
+          btn.classList.add('tap-armed','express-armed');
+          flashTransientLabel(btn,'Tap again · Express',3000);
+          timer=setTimeout(()=>{
+            reset();
+            // No second press: continue into the existing full sync flow.
+            openRegularChurchSuiteSyncForService(svc,'services');
+          },3000);
+          return;
+        }
+
+        // Second press inside the three-second window: Express Sync.
+        reset();
+        expressChurchSuiteSync(svc,'services');
+        return;
+      }
+
+      // ChurchSuite plan link retains its existing two-tap confirmation.
+      if(!armed){
+        armed=true;
+        btn.classList.add('tap-armed');
+        flashTransientLabel(btn,btn.dataset.transientLabel||'Tap again',3500);
+        timer=setTimeout(reset,3500);
+        return;
+      }
+      reset();
+      if(btn.dataset.confirmAction==='view'&&btn.dataset.confirmUrl){
+        window.open(btn.dataset.confirmUrl,'_blank','noopener');
+      }
+    };
+  });
   $('#servicesPage').querySelectorAll('[data-select-service]').forEach(box=>box.onchange=()=>{
     const id=String(box.dataset.selectService);
     if(box.checked)selectedServiceIds.add(id);
@@ -5351,20 +7508,21 @@ function renderServicesPage(){
 
   $('#servicesPage').querySelectorAll('[data-open-service]').forEach(b=>b.onclick=async()=>{
     state.activeServiceId=b.dataset.openService;
+    const openedService=currentService();
+    if(openedService){
+      rememberEditSessionBaseline(openedService,true);
+      undoStacks.set(String(openedService.id),[]);
+      redoStacks.set(String(openedService.id),[]);
+      resetUndoBaseline(openedService);
+    }
     persistPlanner();
-    await saveActiveServiceRemote(state.activeServiceId);
     closeServicesPage();
     render();
   });
   $('#servicesPage').querySelectorAll('[data-save-template]').forEach(b=>b.onclick=()=>{const svc=state.services.find(x=>String(x.id)===String(b.dataset.saveTemplate));if(svc)saveServiceAsTemplate(svc)});
   $('#servicesPage').querySelectorAll('[data-sync-cs]').forEach(b=>b.onclick=()=>{
-    const s=state.services.find(x=>String(x.id)===String(b.dataset.syncCs));
-    if(!s)return;
-    openChurchSuiteImportModeChoice({
-      title:`Sync ${s.title}`,
-      onBack:()=>renderServicesPage(),
-      onConfirm:(importMode,templateId='')=>openChurchSuiteServiceScan(s.churchSuitePlanUrl||'',s.id,{theme:s.theme,planId:s.churchSuitePlanId||null,importMode,templateId:templateId||defaultTemplateIdForService(s)})
-    });
+    const service=state.services.find(x=>String(x.id)===String(b.dataset.syncCs));
+    if(service)openRegularChurchSuiteSyncForService(service,'services');
   });
   $('#servicesPage').querySelectorAll('[data-page-delete]').forEach(b=>{let armed=false,timer=null;b.onclick=()=>{const s=state.services.find(x=>String(x.id)===String(b.dataset.pageDelete));if(!s)return;if(!armed){armed=true;b.classList.add('armed','delete-x-confirm');b.textContent='×';b.title='Click again to confirm delete';b.setAttribute('aria-label','Confirm delete');timer=setTimeout(()=>{armed=false;b.classList.remove('armed','delete-x-confirm');b.innerHTML='<svg class="trash-icon" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg>';b.title='Delete service';b.setAttribute('aria-label','Delete service')},3000);return}clearTimeout(timer);confirmDeleteServiceFromPage(s)}})
 }
@@ -5576,7 +7734,7 @@ function openAddServiceFromServicesPage(){
 
   $('#cancelServiceAdd').onclick=()=>sheet.close();
 
-  confirmBtn.onclick=()=>{
+  confirmBtn.onclick=async()=>{
     const churchSuiteUrl=urlInput?.value.trim()||'';
     const selectedTheme=$('#newServiceTheme').value||'Default';
     const importMode=$('#newChurchSuiteImportMode')?.value||state.settings.churchSuiteDefaultImportMode||'all';
@@ -5618,7 +7776,15 @@ function openAddServiceFromServicesPage(){
     state.services.push(service);
     state.activeServiceId=id;
     persistPlanner();
-    createRemoteService(service);
+    try{
+      await createRemoteService(service);
+    }catch(err){
+      state.services=state.services.filter(row=>String(row.id)!==String(id));
+      state.activeServiceId=state.services[0]?.id||'';
+      persistPlanner();
+      await appAlert(err?.message||'The service could not be created in the shared planner.',{title:'Service not created'});
+      return;
+    }
     sheet.close();
     renderServicesPage();
   };
@@ -5627,6 +7793,34 @@ function openAddServiceFromServicesPage(){
 
 function normalizeChurchSuiteName(value){
   return String(value||'').trim().toLowerCase().replace(/\s+/g,' ');
+}
+
+function defaultKeepLocalForChurchSuiteImport(importAs){
+  return ['sermon','images','video','pdf'].includes(String(importAs||''));
+}
+
+function churchSuiteKeepLocalPolicyForType(typeName){
+  const rule=matchChurchSuiteType(typeName);
+  if(!rule)return false;
+  return typeof rule.keepLocalChanges==='boolean'
+    ?rule.keepLocalChanges
+    :defaultKeepLocalForChurchSuiteImport(rule.importAs);
+}
+
+function churchSuiteComparableItem(item){
+  if(!item)return null;
+  return {
+    type:item.type||'', title:item.title||'', person:item.person||'', notes:item.notes||'',
+    verse:item.verse||'', musicNote:item.musicNote||'', projected:item.projected!==false,
+    ignoreImages:!!item.ignoreImages, ignoreVideo:!!item.ignoreVideo, ignoreBible:!!item.ignoreBible,
+    autoplay:item.autoplay||'', interval:Number(item.interval||0), autoStart:item.autoStart!==false,
+    passage:item.passage||'', bibleVersion:item.bibleVersion||'', bibleText:item.bibleText||'',
+    media:(item.media||[]).map(m=>({id:String(m.id||''),name:String(m.originalName||'')}))
+  };
+}
+
+function markChurchSuiteItemLocalChanged(item){
+  if(item?.churchSuiteSourceId)item.churchSuiteLocalChanged=true;
 }
 
 function matchChurchSuiteType(typeName){
@@ -5659,6 +7853,191 @@ async function scanChurchSuitePlan(url,planId=null){
   });
 }
 
+
+const CHURCHSUITE_BIBLE_BOOK_ALIASES={
+  GEN:'Genesis',EXO:'Exodus',EXOD:'Exodus',LEV:'Leviticus',NUM:'Numbers',DEU:'Deuteronomy',DEUT:'Deuteronomy',
+  JOS:'Joshua',JOSH:'Joshua',JDG:'Judges',JUDG:'Judges',RUT:'Ruth',
+  '1SA':'1 Samuel','1SAM':'1 Samuel','2SA':'2 Samuel','2SAM':'2 Samuel',
+  '1KI':'1 Kings','1KGS':'1 Kings','2KI':'2 Kings','2KGS':'2 Kings',
+  '1CH':'1 Chronicles','1CHR':'1 Chronicles','2CH':'2 Chronicles','2CHR':'2 Chronicles',
+  EZR:'Ezra',NEH:'Nehemiah',EST:'Esther',JOB:'Job',PS:'Psalms',PSA:'Psalms',PSALM:'Psalms',PSALMS:'Psalms',
+  PRO:'Proverbs',PROV:'Proverbs',ECC:'Ecclesiastes',ECCL:'Ecclesiastes',SNG:'Song of Songs',SOS:'Song of Songs',
+  ISA:'Isaiah',JER:'Jeremiah',LAM:'Lamentations',EZE:'Ezekiel',EZEK:'Ezekiel',DAN:'Daniel',
+  HOS:'Hosea',JOL:'Joel',JOE:'Joel',AMO:'Amos',OBA:'Obadiah',OBAD:'Obadiah',JON:'Jonah',MIC:'Micah',
+  NAM:'Nahum',NAH:'Nahum',HAB:'Habakkuk',ZEP:'Zephaniah',ZEPH:'Zephaniah',HAG:'Haggai',ZEC:'Zechariah',ZECH:'Zechariah',MAL:'Malachi',
+  MAT:'Matthew',MATT:'Matthew',MRK:'Mark',MAR:'Mark',MARK:'Mark',LUK:'Luke',LUKE:'Luke',JHN:'John',JOH:'John',JOHN:'John',
+  ACT:'Acts',ACTS:'Acts',ROM:'Romans',RO:'Romans',
+  '1CO':'1 Corinthians','1COR':'1 Corinthians','2CO':'2 Corinthians','2COR':'2 Corinthians',
+  GAL:'Galatians',EPH:'Ephesians',PHP:'Philippians',PHIL:'Philippians',COL:'Colossians',
+  '1TH':'1 Thessalonians','1THS':'1 Thessalonians','2TH':'2 Thessalonians','2THS':'2 Thessalonians',
+  '1TI':'1 Timothy','1TIM':'1 Timothy','2TI':'2 Timothy','2TIM':'2 Timothy',
+  TIT:'Titus',PHM:'Philemon',PHLM:'Philemon',HEB:'Hebrews',JAS:'James',JAM:'James',
+  '1PE':'1 Peter','1PET':'1 Peter','2PE':'2 Peter','2PET':'2 Peter',
+  '1JN':'1 John','1JO':'1 John','2JN':'2 John','2JO':'2 John','3JN':'3 John','3JO':'3 John',
+  JUD:'Jude',JUDE:'Jude',REV:'Revelation'
+};
+
+function parseChurchSuiteBibleReference(value){
+  const raw=String(value||'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();
+  if(!raw)return {passage:'',translation:'',raw:''};
+
+  let working=raw;
+  let translation='';
+  const versionMatch=working.match(/\s*\(([^()]+)\)\s*$/);
+  if(versionMatch){
+    translation=String(versionMatch[1]||'').trim();
+    working=working.slice(0,versionMatch.index).trim();
+  }
+
+  // ChurchSuite commonly supplies references like "ROM 1:18-2:11".
+  // Match the book portion greedily up to the first chapter/reference digit.
+  const refMatch=working.match(/^(.+?)\s+(\d[\dA-Za-z:.,;\-\u2013\u2014\s]*)$/);
+  if(!refMatch)return {passage:working,translation,raw};
+
+  const rawBook=String(refMatch[1]||'').trim();
+  const reference=String(refMatch[2]||'').trim().replace(/\s*[\u2013\u2014]\s*/g,'-');
+  const key=rawBook.toUpperCase().replace(/[^0-9A-Z]/g,'');
+  const book=CHURCHSUITE_BIBLE_BOOK_ALIASES[key]||rawBook.replace(/\b\w/g,ch=>ch.toUpperCase());
+  return {passage:`${book} ${reference}`.trim(),translation,raw};
+}
+
+async function fetchBibleGatewayPassageText(passage,translation='NIV'){
+  const ref=String(passage||'').trim();
+  const ver=String(translation||'').trim()||'NIV';
+  if(!ref||!remoteAvailable)return '';
+  try{
+    const params=new URLSearchParams({search:ref,version:ver});
+    const response=await apiFetch('/api/bible-gateway/fetch?'+params.toString());
+    const html=String(response?.html||'');
+    if(!html)return '';
+    const result=cleanBibleGatewayHtml(html,{preferPassageRoot:true});
+    const cleaned=String(result?.text||'').trim();
+    return cleaned.length>=20?cleaned:'';
+  }catch(err){
+    console.warn('Automatic ChurchSuite Bible passage fetch failed',ref,ver,err);
+    return '';
+  }
+}
+
+async function autoPopulateChurchSuiteBibleItems(items){
+  const bibleItems=(items||[]).filter(item=>item?.type==='bible'&&item.churchSuiteSourceId&&!String(item.bibleText||'').trim());
+  for(const item of bibleItems){
+    const text=await fetchBibleGatewayPassageText(item.passage||item.detail||'',item.bibleVersion||'NIV');
+    if(text){
+      item.bibleText=text;
+      item.ready=true;
+      item.detail=item.passage||item.detail||'Bible passage';
+      item.bibleAutoFetched=true;
+    }else{
+      item.bibleAutoFetched=false;
+      item.ready=false;
+    }
+  }
+  return items;
+}
+
+
+function suggestedChurchSuiteImportForType(typeName){
+  const name=normalizeChurchSuiteName(typeName);
+  if(/\b(bible|scripture|reading|passage)\b/.test(name))return 'bible';
+  if(/\b(sermon|message|preach|talk)\b/.test(name))return 'sermon';
+  if(/\b(image|images|photo|photos|notice|notices|slide|slides)\b/.test(name))return 'images';
+  if(/\b(video|clip|movie)\b/.test(name))return 'video';
+  if(/\b(pdf|document|handout)\b/.test(name))return 'pdf';
+  if(/\b(text|welcome|prayer|announcement|announcements|transition|response|reading intro)\b/.test(name))return 'text';
+  return 'ignore';
+}
+
+function openChurchSuiteDiscoveredTypeSetup(typeNames,{onSaved,onCancel}={}){
+  const names=[...new Set((typeNames||[]).map(x=>String(x||'').trim()).filter(Boolean))]
+    .filter(name=>!matchChurchSuiteType(name));
+  if(!names.length){onSaved?.();return;}
+
+  const rows=names.map((name,index)=>{
+    const suggested=suggestedChurchSuiteImportForType(name);
+    const keep=defaultKeepLocalForChurchSuiteImport(suggested);
+    return `<div class="churchsuite-type-row discovered-cs-type-row" data-discovered-cs-type="${index}">
+      <div class="discovered-cs-type-name"><strong>${esc(name)}</strong><small>Discovered in this ChurchSuite sync</small></div>
+      <select class="cs-type-map" data-discovered-map="${index}">
+        ${CHURCHSUITE_TYPE_IMPORT_OPTIONS.map(([value,label])=>`<option value="${value}" ${suggested===value?'selected':''}>${label}</option>`).join('')}
+      </select>
+      <select class="cs-type-local-policy" data-discovered-policy="${index}" title="Default behaviour after this Type is imported">
+        <option value="keep" ${keep?'selected':''}>Keep local edits</option>
+        <option value="update" ${keep?'':'selected'}>Update from ChurchSuite</option>
+      </select>
+    </div>`;
+  }).join('');
+
+  openSheet(`<h2>Set up new ChurchSuite Types</h2>
+    <p class="meta">These Types were found in the service but are not yet configured. Choose how each should appear in OpenLP Planner and whether future syncs should protect local edits.</p>
+    <div class="churchsuite-types-list discovered-cs-types">${rows}</div>
+    <p class="meta">These choices are saved to <strong>Settings → Extensions → ChurchSuite service-plan Types</strong> and will be used for future syncs.</p>
+    <div class="sheet-actions">
+      <button class="secondary" id="cancelDiscoveredCsTypes">Back</button>
+      <button class="primary" id="saveDiscoveredCsTypes">Save Types & continue</button>
+    </div>`);
+
+  const cancel=()=>onCancel?onCancel():closeSheetSafely();
+  $('#cancelDiscoveredCsTypes').onclick=cancel;
+  setSheetCloseAction(cancel);
+
+  // When the Planner item type changes, follow its normal local-edit default.
+  names.forEach((_,index)=>{
+    const map=body.querySelector(`[data-discovered-map="${index}"]`);
+    const policy=body.querySelector(`[data-discovered-policy="${index}"]`);
+    map?.addEventListener('change',()=>{
+      if(policy)policy.value=defaultKeepLocalForChurchSuiteImport(map.value)?'keep':'update';
+    });
+  });
+
+  $('#saveDiscoveredCsTypes').onclick=async()=>{
+    const button=$('#saveDiscoveredCsTypes');
+    button.disabled=true;
+    button.textContent='Saving…';
+    try{
+      const additions=names.map((name,index)=>{
+        const importAs=body.querySelector(`[data-discovered-map="${index}"]`)?.value||'ignore';
+        const keepLocalChanges=body.querySelector(`[data-discovered-policy="${index}"]`)?.value==='keep';
+        return {name,importAs,keepLocalChanges};
+      });
+      const existing=[...(state.settings.churchSuiteTypes||[])];
+      const existingNames=new Set(existing.map(row=>normalizeChurchSuiteName(row.name)));
+      for(const row of additions){
+        if(!existingNames.has(normalizeChurchSuiteName(row.name))){
+          existing.push(row);
+          existingNames.add(normalizeChurchSuiteName(row.name));
+        }
+      }
+      state.settings.churchSuiteTypes=existing;
+      persistPlanner();
+      if(remoteAvailable){
+        await apiFetch('/api/settings',{method:'PUT',body:JSON.stringify({settings:state.settings})});
+      }
+      onSaved?.();
+    }catch(err){
+      button.disabled=false;
+      button.textContent='Save Types & continue';
+      await appAlert(err?.message||'The ChurchSuite Types could not be saved.',{title:'Types not saved'});
+    }
+  };
+}
+
+function churchSuitePeopleImportEnabled(){
+  return state.settings?.churchSuiteImportPeopleEnabled===true;
+}
+function churchSuitePeopleNames(component){
+  const people=Array.isArray(component?.people)
+    ?component.people
+    :Array.isArray(component?.churchSuitePeople)
+      ?component.churchSuitePeople
+      :[];
+  return people
+    .map(person=>String(person?.name||[person?.firstName,person?.lastName].filter(Boolean).join(' ')||'').trim())
+    .filter(Boolean);
+}
+function churchSuitePeopleLabel(component){ return churchSuitePeopleNames(component).join(', '); }
+function churchSuiteSongPeopleLabel(component){ return churchSuitePeopleNames(component).slice(0,2).join(', '); }
+
 function mapChurchSuiteScanItems(scanItems,importMode='all',selectedTypes=null){
   const mapped=[];
   const unmappedTypes=[];
@@ -5677,7 +8056,8 @@ function mapChurchSuiteScanItems(scanItems,importMode='all',selectedTypes=null){
         type:'song',
         songId:song?.id||null,
         title:component.title||'Song',
-        person:'Music',
+        person:churchSuitePeopleImportEnabled()&&churchSuiteSongPeopleLabel(component)?churchSuiteSongPeopleLabel(component):'Music',
+        churchSuitePeople:churchSuitePeopleImportEnabled()?structuredClone(component.people||[]):[],
         projected:true,
         ready:!!song,
         detail:song?'Usual arrangement':'Song not found in song library',
@@ -5709,19 +8089,35 @@ function mapChurchSuiteScanItems(scanItems,importMode='all',selectedTypes=null){
     const base={
       id:`cs-${sourceId}`,
       title:component.title||typeName||'ChurchSuite item',
-      person:'',
+      person:churchSuitePeopleImportEnabled()?churchSuitePeopleLabel(component):'',
+      churchSuitePeople:churchSuitePeopleImportEnabled()?structuredClone(component.people||[]):[],
       by:currentEditor(),
       changed:'just now',
       churchSuiteSourceId:sourceId,
       churchSuiteType:typeName,
-      churchSuiteDetails:component.details||''
+      churchSuiteDetails:component.details||'',
+      retainOnChurchSuiteSync:typeof typeRule.keepLocalChanges==='boolean'
+        ?typeRule.keepLocalChanges
+        :defaultKeepLocalForChurchSuiteImport(importAs),
+      churchSuiteLocalChanged:false
     };
 
     if(importAs==='text'){
       mapped.push({...base,type:'text',projected:false,ready:true,notes:component.details||''});
     }else if(importAs==='bible'){
-      const ref=component.details||component.title||'';
-      mapped.push({...base,type:'bible',projected:true,ready:false,detail:ref,passage:ref});
+      const ref=String(component.passage||'').trim();
+      const parsed=parseChurchSuiteBibleReference(ref);
+      mapped.push({
+        ...base,
+        type:'bible',
+        projected:true,
+        ready:false,
+        detail:parsed.passage||ref,
+        passage:parsed.passage||ref,
+        bibleVersion:parsed.translation||'',
+        bibleText:'',
+        churchSuiteBibleRaw:ref
+      });
     }else if(importAs==='sermon'){
       mapped.push({
         ...base,
@@ -5759,7 +8155,7 @@ function churchSuiteScanItemPreview(scanItems){
       <span class="cs-scan-order">${String(index+1).padStart(2,'0')}</span>
       <div class="cs-scan-item-main">
         <strong>${esc(item.title||item.typeName||'Untitled item')}</strong>
-        <small>${isSong?'Song':esc(item.typeName||'No ChurchSuite Type')}</small>
+        <small>${isSong?'Song':esc(item.typeName||'No ChurchSuite Type')}${!isSong&&churchSuitePeopleLabel(item)?` · ${esc(churchSuitePeopleLabel(item))}`:''}</small>
         ${item.details?`<p>${esc(item.details)}</p>`:''}
       </div>
       <span class="cs-scan-map">${esc(target)}</span>
@@ -5858,7 +8254,7 @@ async function saveServiceAsTemplate(service){
     <div class="field"><label>OpenLP theme</label><select id="templateTheme">${plannerThemeNames().map(theme=>`<option value="${esc(theme)}" ${String(service.theme||'Default')===String(theme)?'selected':''}>${esc(theme)}</option>`).join('')}</select><p class="meta">Services created or re-synced with this template use this OpenLP theme.</p></div>
     <div class="template-item-list">${(service.items||[]).map((item,index)=>{
       const defaultKeep=!item.churchSuiteSourceId || item.retainOnChurchSuiteSync || item.type==='sermon-images';
-      return `<div class="template-item-row"><span class="template-position">${index+1}</span><div><strong>${esc(item.title)}</strong><small>${esc(csTemplates?(item.churchSuiteType||item.type||'item'):(item.type||'item'))}</small></div>${item.type==='song'?`<select data-template-item-mode="${esc(String(item.id))}" disabled><option value="sync" selected>${csTemplates?'Song position · next ChurchSuite song':'Song position'}</option></select>`:(csTemplates?`<select data-template-item-mode="${esc(String(item.id))}"><option value="sync" ${defaultKeep?'':'selected'}>Sync from ChurchSuite</option><option value="keep" ${defaultKeep?'selected':''}>Keep in template</option></select>`:`<select data-template-item-mode="${esc(String(item.id))}" disabled><option value="keep" selected>Keep in template</option></select>`)}</div>`;
+      return `<div class="template-item-row"><span class="template-position">${index+1}</span><div><strong>${esc(item.title)}</strong><small>${esc(csTemplates?(item.churchSuiteType||item.type||'item'):(item.type||'item'))}</small></div><div class="template-save-controls">${item.type==='song'?`<select data-template-item-mode="${esc(String(item.id))}" disabled><option value="sync" selected>${csTemplates?'Song position · next ChurchSuite song':'Song position'}</option></select>`:(csTemplates?`<select data-template-item-mode="${esc(String(item.id))}"><option value="sync" ${defaultKeep?'':'selected'}>Sync from ChurchSuite</option><option value="keep" ${defaultKeep?'selected':''}>Keep in template</option></select>`:`<select data-template-item-mode="${esc(String(item.id))}" disabled><option value="keep" selected>Keep in template</option></select>`)}${csTemplates?`<label class="template-people-toggle"><input type="checkbox" data-template-item-people="${esc(String(item.id))}" checked><span>Update people</span></label>`:''}</div></div>`;
     }).join('')}</div>
     <label class="toggle"><span>Make this the default template for ${esc(service.serviceTypeName||service.title||'this service type')}</span><input id="templateMakeDefault" type="checkbox" ${service.serviceTypeId?'checked':'disabled'}></label>
     <div class="sheet-actions"><button class="secondary" id="cancelTemplateSave">Cancel</button><button class="primary" id="confirmTemplateSave">Save template</button></div>`);
@@ -5879,7 +8275,8 @@ async function saveServiceAsTemplate(service){
             churchSuiteType:item.type==='song'?'Song':(item.churchSuiteType||null),
             type:item.type,
             sourcePosition:(service.items||[]).indexOf(item),
-            title:item.type==='song'?(item.title||'Song'):(item.title||'')
+            title:item.type==='song'?(item.title||'Song'):(item.title||''),
+            updatePeopleFromChurchSuite:!!body.querySelector(`[data-template-item-people="${CSS.escape(String(item.id))}"]`)?.checked
           });
         }else{
           const durable=await makeTemplateMediaDurable(item);
@@ -5887,6 +8284,7 @@ async function saveServiceAsTemplate(service){
           durable.templateSourceItemId=String(item.id);
           durable.templateProtected=true;
           durable.retainOnChurchSuiteSync=true;
+          durable.updatePeopleFromChurchSuite=!!body.querySelector(`[data-template-item-people="${CSS.escape(String(item.id))}"]`)?.checked;
           delete durable.churchSuiteSourceId;
           delete durable.churchSuiteExcludedFromLastSync;
           templateItems.push(durable);
@@ -5907,7 +8305,58 @@ function openTemplateChooser({onChoose,onBack=null,preferredId=''}={}){
   const templates=serviceTemplates();
   if(!templates.length){appAlert('No service templates have been saved yet.');return;}
   const sorted=[...templates].sort((a,b)=>(String(a.id)===String(preferredId)?-1:String(b.id)===String(preferredId)?1:String(a.name).localeCompare(String(b.name))));
-  openSheet(`<h2>Use a Template</h2><p class="meta">Choose the service pattern to apply to this ChurchSuite plan.</p><div class="template-choice-list">${sorted.map(t=>`<button class="choice ${String(t.id)===String(preferredId)?'template-default-choice':''}" data-use-template="${esc(t.id)}"><strong>${esc(t.name)}</strong><span>${t.items?.length||0} positions${String(t.id)===String(preferredId)?' · default for this service type':''}</span></button>`).join('')}</div><div class="sheet-actions"><button class="secondary" id="templateChoiceBack">Back</button></div>`);
+  let selectedId=String(preferredId&&templates.some(t=>String(t.id)===String(preferredId))
+    ?preferredId
+    :sorted[0]?.id||'');
+
+  const detailHtml=template=>{
+    if(!template)return '<p class="meta">Select a template.</p>';
+    const positions=(template.items||[]).map((item,index)=>{
+      const kind=isTemplateSongSlot(item)
+        ?'Song'
+        :templateItemKind(item)==='sync'
+          ?`ChurchSuite: ${item.churchSuiteType||item.title||item.type||'Configured Type'}`
+          :`Keep local: ${item.title||item.type||'Item'}`;
+      return `<li><span>${index+1}.</span> ${esc(kind)}</li>`;
+    }).join('');
+    return `<div class="template-choice-detail-card">
+      <div class="template-choice-detail-head">
+        <div>
+          <strong>${esc(template.name)}</strong>
+          <small>${template.items?.length||0} positions${String(template.id)===String(preferredId)?' · default for this service type':''}</small>
+        </div>
+        ${template.theme?`<span class="template-theme-detail">Theme: ${esc(template.theme)}</span>`:''}
+      </div>
+      ${positions?`<ol class="template-choice-detail-list">${positions}</ol>`:'<p class="meta">This template has no saved positions.</p>'}
+    </div>`;
+  };
+
+  const renderSelection=()=>{
+    body.querySelectorAll('[data-use-template]').forEach(btn=>{
+      const selected=String(btn.dataset.useTemplate)===selectedId;
+      btn.classList.toggle('selected',selected);
+      btn.classList.toggle('template-default-choice',selected&&String(selectedId)===String(preferredId));
+      btn.setAttribute('aria-pressed',selected?'true':'false');
+    });
+    const detail=$('#templateChoiceDetail');
+    if(detail)detail.innerHTML=detailHtml(serviceTemplateById(selectedId));
+    const continueBtn=$('#templateChoiceContinue');
+    if(continueBtn)continueBtn.disabled=!serviceTemplateById(selectedId);
+  };
+
+  openSheet(`<h2>Use a Template</h2>
+    <p class="meta">Choose the service pattern to apply to this ChurchSuite plan. The default for this service type is selected for you.</p>
+    <div class="template-chooser-layout">
+      <div class="template-choice-list">
+        ${sorted.map(t=>`<button class="choice ${String(t.id)===selectedId?'selected':''} ${String(t.id)===String(preferredId)?'template-default-choice':''}" type="button" data-use-template="${esc(t.id)}" aria-pressed="${String(t.id)===selectedId?'true':'false'}"><strong>${esc(t.name)}</strong><span>${t.items?.length||0} positions${String(t.id)===String(preferredId)?' · default for this service type':''}</span></button>`).join('')}
+      </div>
+      <div id="templateChoiceDetail" class="template-choice-detail">${detailHtml(serviceTemplateById(selectedId))}</div>
+    </div>
+    <div class="sheet-actions">
+      <button class="secondary" id="templateChoiceBack">Back</button>
+      <button class="primary" id="templateChoiceContinue">Continue</button>
+    </div>`);
+
   let choosing=false;
   const leaveTemplateChooser=()=>{
     if(choosing)return;
@@ -5916,19 +8365,24 @@ function openTemplateChooser({onChoose,onBack=null,preferredId=''}={}){
   };
   $('#templateChoiceBack').onclick=leaveTemplateChooser;
   setSheetCloseAction(leaveTemplateChooser);
+
   body.querySelectorAll('[data-use-template]').forEach(btn=>btn.onclick=()=>{
     if(choosing)return;
-    const t=serviceTemplateById(btn.dataset.useTemplate);
-    if(!t)return;
-    choosing=true;
-    body.querySelectorAll('[data-use-template]').forEach(other=>other.disabled=true);
-    $('#templateChoiceBack').disabled=true;
-    btn.classList.add('choice-working');
-    const strong=btn.querySelector('strong');
-    if(strong)strong.textContent=`✓ ${strong.textContent.replace(/^✓\s*/,'')}`;
-    setTimeout(()=>onChoose(t),30);
+    selectedId=String(btn.dataset.useTemplate||'');
+    renderSelection();
   });
+
+  $('#templateChoiceContinue').onclick=()=>{
+    if(choosing)return;
+    const selected=serviceTemplateById(selectedId);
+    if(!selected)return;
+    choosing=true;
+    body.querySelectorAll('[data-use-template],#templateChoiceBack,#templateChoiceContinue').forEach(el=>el.disabled=true);
+    $('#templateChoiceContinue').textContent='Continuing…';
+    setTimeout(()=>onChoose(selected),30);
+  };
 }
+
 function churchSuiteTemplateSlotMatches(templateItem,incoming){
   if(templateItem.churchSuiteType && incoming.churchSuiteType)return String(templateItem.churchSuiteType).toLowerCase()===String(incoming.churchSuiteType).toLowerCase();
   return String(templateItem.type||'')===String(incoming.type||'');
@@ -5963,6 +8417,132 @@ function templateKeptSlotMatchesIncoming(slot,incoming){
   if(slotTitle&&incomingTitle&&(slotTitle.includes(incomingTitle)||incomingTitle.includes(slotTitle)))return true;
   return false;
 }
+function verifyTemplateSongPopulation(template,incoming,result){
+  const incomingSongs=(incoming||[]).filter(item=>String(item?.type||'').toLowerCase()==='song');
+  if(!incomingSongs.length)return result;
+
+  const resultSongs=(result||[]).filter(item=>String(item?.type||'').toLowerCase()==='song');
+  if(resultSongs.length>=incomingSongs.length)return result;
+
+  // A template sync must never silently lose a ChurchSuite song. If a future
+  // template-placement edge case misses one, keep that source song as an extra
+  // item rather than dropping it from the service.
+  const existingSourceIds=new Set(resultSongs.map(item=>String(item.churchSuiteSourceId||'')).filter(Boolean));
+  const missing=incomingSongs.filter(item=>{
+    const source=String(item.churchSuiteSourceId||'');
+    return source ? !existingSourceIds.has(source) : !resultSongs.some(row=>String(row.title||'')===String(item.title||''));
+  });
+  return [...(result||[]),...missing.map((item,index)=>({
+    ...item,
+    extraChurchSuiteSong:true,
+    extraChurchSuiteSongNumber:resultSongs.length+index+1,
+    churchSuiteTemplateNote:'ChurchSuite song retained because template placement did not consume it.'
+  }))];
+}
+
+
+function previewTemplateResult(template,mapped,existingItems=[]){
+  if(!template)return structuredClone(mapped||[]);
+  const pool=structuredClone(mapped||[]);
+  const out=[];
+
+  for(let index=0;index<(template.items||[]).length;index++){
+    const slot=template.items[index];
+
+    if(isTemplateSongSlot(slot)){
+      const at=pool.findIndex(x=>String(x?.type||'').toLowerCase()==='song');
+      if(at>=0){
+        const incoming=pool.splice(at,1)[0];
+        incoming.templateSongSlot=true;
+        incoming.templateSongSlotIndex=index;
+        incoming.templateId=template.id;
+        incoming.templateSongPlaceholder=false;
+        out.push(incoming);
+      }else{
+        const previousSong=(existingItems||[]).find(old=>
+          old?.type==='song' &&
+          Number(old.templateSongSlotIndex)===index &&
+          (String(old.templateId||'')===String(template.id||'') || old.templateSongPlaceholder || old.templateSongSlot)
+        );
+        if(previousSong&&(previousSong.songId||previousSong.serviceSong)){
+          out.push({...structuredClone(previousSong),templateSongSlot:true,templateSongSlotIndex:index,templateId:template.id});
+        }else{
+          out.push({
+            type:'song',
+            title:String(slot.title||'Song').trim()||'Song',
+            ready:false,
+            templateSongSlot:true,
+            templateSongPlaceholder:true,
+            templateSongSlotIndex:index,
+            templateId:template.id,
+            previewOrigin:'template'
+          });
+        }
+      }
+      continue;
+    }
+
+    if(templateItemKind(slot)==='sync'){
+      const at=pool.findIndex(x=>churchSuiteTemplateSlotMatches(slot,x));
+      if(at>=0){
+        const incoming=pool.splice(at,1)[0];
+        if(!churchSuitePeopleImportEnabled()||slot.updatePeopleFromChurchSuite===false){
+          const previous=(existingItems||[]).find(old=>String(old.churchSuiteType||'').toLowerCase()===String(incoming.churchSuiteType||'').toLowerCase());
+          incoming.person=previous?.person||'';
+          incoming.churchSuitePeople=previous?.churchSuitePeople||[];
+        }
+        out.push(incoming);
+      }
+      continue;
+    }
+
+    const replaceAt=pool.findIndex(x=>templateKeptSlotMatchesIncoming(slot,x));
+    const incomingPeopleSource=replaceAt>=0?pool[replaceAt]:null;
+    if(replaceAt>=0)pool.splice(replaceAt,1);
+    const local={...structuredClone(slot),templateProtected:true,templateId:template.id,previewOrigin:'template'};
+    if(churchSuitePeopleImportEnabled()&&slot.updatePeopleFromChurchSuite!==false&&incomingPeopleSource){
+      local.person=incomingPeopleSource.person||'';
+      local.churchSuitePeople=structuredClone(incomingPeopleSource.churchSuitePeople||[]);
+    }
+    out.push(local);
+  }
+
+  // The implementation only carries unmatched ChurchSuite songs forward as
+  // extras. Other raw ChurchSuite rows are intentionally not dumped into a
+  // template-managed service.
+  const extras=pool
+    .filter(item=>String(item?.type||'').toLowerCase()==='song')
+    .map(item=>({...item,extraChurchSuiteSong:true}));
+
+  const applied=verifyTemplateSongPopulation(template,mapped,[...out,...extras]);
+  const managedLocalIds=templateManagedLocalIds(template,existingItems||[]);
+  const otherLocal=(existingItems||[]).filter(item=>
+    !item.churchSuiteSourceId &&
+    !item.templateProtected &&
+    !managedLocalIds.has(String(item.id))
+  );
+
+  return [...applied,...structuredClone(otherLocal)];
+}
+
+function templateResultPreviewHtml(items){
+  return `<div class="template-result-preview">${(items||[]).map((item,index)=>{
+    const source=item.extraChurchSuiteSong
+      ?'Extra ChurchSuite song'
+      :item.templateSongPlaceholder
+        ?'Template song position · no ChurchSuite song'
+        :item.churchSuiteSourceId
+          ?'From ChurchSuite'
+          :item.templateProtected||item.previewOrigin==='template'
+            ?'Kept by template'
+            :'Kept local item';
+    return `<div class="template-result-preview-row">
+      <span class="template-position">${index+1}</span>
+      <div><strong>${esc(item.title||item.passage||item.type||'Service item')}</strong><small>${esc(source)}</small></div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
 async function applyTemplateToMappedItems(template,mapped,serviceId,existingItems=[]){
   if(!template)return mapped;
   const pool=[...(mapped||[])];
@@ -5984,6 +8564,11 @@ async function applyTemplateToMappedItems(template,mapped,serviceId,existingItem
         incoming.templateProtected=false;
         incoming.templateSongPlaceholder=false;
         incoming.extraChurchSuiteSong=false;
+        if(!churchSuitePeopleImportEnabled()||slot.updatePeopleFromChurchSuite===false){
+          const previousSong=(existingItems||[]).find(old=>old?.type==='song'&&Number(old.templateSongSlotIndex)===index);
+          incoming.person=previousSong?.person||'Music';
+          incoming.churchSuitePeople=previousSong?.churchSuitePeople||[];
+        }
         out.push(incoming);
       }else{
         // If this service already has a locally chosen song in this same
@@ -6040,14 +8625,27 @@ async function applyTemplateToMappedItems(template,mapped,serviceId,existingItem
 
     if(templateItemKind(slot)==='sync'){
       const at=pool.findIndex(x=>churchSuiteTemplateSlotMatches(slot,x));
-      if(at>=0)out.push(pool.splice(at,1)[0]);
+      if(at>=0){
+        const incoming=pool.splice(at,1)[0];
+        if(!churchSuitePeopleImportEnabled()||slot.updatePeopleFromChurchSuite===false){
+          const previous=(existingItems||[]).find(old=>String(old.churchSuiteType||'').toLowerCase()===String(incoming.churchSuiteType||'').toLowerCase());
+          incoming.person=previous?.person||'';
+          incoming.churchSuitePeople=previous?.churchSuitePeople||[];
+        }
+        out.push(incoming);
+      }
       continue;
     }
 
     const replaceAt=pool.findIndex(x=>templateKeptSlotMatchesIncoming(slot,x));
+    const incomingPeopleSource=replaceAt>=0?pool[replaceAt]:null;
     if(replaceAt>=0)pool.splice(replaceAt,1);
 
     const item=structuredClone(slot);
+    if(churchSuitePeopleImportEnabled()&&slot.updatePeopleFromChurchSuite!==false&&incomingPeopleSource){
+      item.person=incomingPeopleSource.person||'';
+      item.churchSuitePeople=structuredClone(incomingPeopleSource.churchSuitePeople||[]);
+    }
     item.id=`tplitem-${Date.now()}-${index}-${Math.random().toString(36).slice(2,6)}`;
     item.templateProtected=true;
     item.templateId=template.id;
@@ -6093,7 +8691,7 @@ async function applyTemplateToMappedItems(template,mapped,serviceId,existingItem
       churchSuiteTemplateNote:'Extra ChurchSuite song — no Song slot was available in the selected template.'
     }));
 
-  return [...out,...extraSongs];
+  return verifyTemplateSongPopulation(template,mapped,[...out,...extraSongs]);
 }
 
 
@@ -6161,6 +8759,7 @@ function normalizeTemplateForEditor(template){
     }else if(next.templateMode!=='sync'&&next.templateMode!=='keep'){
       next.templateMode=next.churchSuiteSourceId?'sync':'keep';
     }
+    if(typeof next.updatePeopleFromChurchSuite!=='boolean') next.updatePeopleFromChurchSuite=true;
     return next;
   });
   return draft;
@@ -6192,7 +8791,7 @@ function openServiceTemplateManager(returnTo='library'){
       </div>`;
     }).join(''):`<div class="template-empty-state"><strong>No templates have been saved.</strong><p>Create one from an existing service, or create and prepare a service first and then choose <strong>Save as template</strong>.</p>${returnTo==='library'?'<button type="button" class="primary" id="emptyCreateServiceTemplateBtn">Create template</button>':''}</div>`}</div>
     <div class="sheet-actions"><button class="primary" id="templateManagerDone">Done</button></div>`);
-  const leaveTemplateManager=()=>returnTo==='settings'?openSettings():openLibraryHub();
+  const leaveTemplateManager=()=>returnTo==='settings'?openSettings():returnTo==='dashboard'?openDashboard():openLibraryHub();
   $('#templateManagerDone').onclick=leaveTemplateManager;
   setSheetCloseAction(leaveTemplateManager);
   if($('#createServiceTemplateBtn'))$('#createServiceTemplateBtn').onclick=openCreateServiceTemplateFromLibrary;
@@ -6260,12 +8859,15 @@ function openServiceTemplateEditor(templateId,returnTo='library'){
               ?(csTemplates?'Song position · fills from ChurchSuite in order':'Song position')
               :(csTemplates?esc(item.churchSuiteType||item.type||'item'):esc(item.type||'item'))}${item.templateLibraryFolderName?` · Folder: ${esc(item.templateLibraryFolderName)}`:''}${Array.isArray(item.media)&&item.media.length?` · ${item.media.length} stored attachment${item.media.length===1?'':'s'}`:''}</small>
           </div>
-          ${isTemplateSongSlot(item)
-            ?`<select data-template-mode="${index}" disabled><option selected>${csTemplates?'Song position · next ChurchSuite song':'Song position'}</option></select>`
-            :(csTemplates?`<select data-template-mode="${index}">
-              <option value="sync" ${templateItemKind(item)==='sync'?'selected':''}>Sync from ChurchSuite</option>
-              <option value="keep" ${templateItemKind(item)==='keep'?'selected':''}>Keep in template</option>
-            </select>`:`<select data-template-mode="${index}" disabled><option selected>Template item</option></select>`)}
+          <div class="template-editor-controls">
+            ${isTemplateSongSlot(item)
+              ?`<select data-template-mode="${index}" disabled><option selected>${csTemplates?'Song position · next ChurchSuite song':'Song position'}</option></select>`
+              :(csTemplates?`<select data-template-mode="${index}">
+                <option value="sync" ${templateItemKind(item)==='sync'?'selected':''}>Sync from ChurchSuite</option>
+                <option value="keep" ${templateItemKind(item)==='keep'?'selected':''}>Keep in template</option>
+              </select>`:`<select data-template-mode="${index}" disabled><option selected>Template item</option></select>`)}
+            ${csTemplates?`<label class="template-people-toggle"><input type="checkbox" data-template-people="${index}" ${item.updatePeopleFromChurchSuite?'checked':''}><span>Update people</span></label>`:''}
+          </div>
           <button type="button" class="media-icon-action danger-quiet" data-template-remove="${index}" title="Remove position" aria-label="Remove position">×</button>
         </div>`).join(''):'<div class="template-empty-state"><strong>This template is empty.</strong><p>Add ChurchSuite sync slots or local Planner items below.</p></div>'}</div>
       <div class="template-editor-addbar">
@@ -6286,6 +8888,7 @@ function openServiceTemplateEditor(templateId,returnTo='library'){
         templateMode:'keep',
         templateProtected:true,
         retainOnChurchSuiteSync:true,
+        updatePeopleFromChurchSuite:true,
         projected:type!=='text',
         ready:type==='text',
         changed:'template',
@@ -6361,7 +8964,8 @@ function openServiceTemplateEditor(templateId,returnTo='library'){
             churchSuiteType:csType,
             type,
             title,
-            sourcePosition:draft.items.length
+            sourcePosition:draft.items.length,
+            updatePeopleFromChurchSuite:true
           });
           dirty=true;
           renderEditor();
@@ -6414,6 +9018,12 @@ function openServiceTemplateEditor(templateId,returnTo='library'){
       else {draft.items[i].templateProtected=false;}
       mark();
     });
+    body.querySelectorAll('[data-template-people]').forEach(input=>input.onchange=()=>{
+      const i=Number(input.dataset.templatePeople);
+      if(!draft.items[i])return;
+      draft.items[i].updatePeopleFromChurchSuite=!!input.checked;
+      mark();
+    });
     body.querySelectorAll('[data-template-up]').forEach(btn=>btn.onclick=()=>{
       const i=Number(btn.dataset.templateUp);if(i<=0)return;
       [draft.items[i-1],draft.items[i]]=[draft.items[i],draft.items[i-1]];dirty=true;renderEditor();
@@ -6454,10 +9064,12 @@ function openServiceTemplateOverride(service=currentService()){
         <span><strong>No template for this service</strong><small>${churchSuiteEnabled()?'ChurchSuite import choices remain available, but no template is preselected.':'This service will not use a saved template.'}</small></span>
       </label>
     </div>
+    <div class="template-save-new-bar"><button class="secondary" id="saveNewTemplateFromService" type="button">＋ Save as new template</button></div>
     <div class="sheet-actions"><button class="secondary" id="cancelServiceTemplateChoice">Cancel</button><button class="primary" id="saveServiceTemplateChoice">Use selection</button></div>`);
 
   const cancelServiceTemplateChoice=()=>closeSheetSafely();
   $('#cancelServiceTemplateChoice').onclick=cancelServiceTemplateChoice;
+  if($('#saveNewTemplateFromService'))$('#saveNewTemplateFromService').onclick=()=>saveServiceAsTemplate(service);
   setSheetCloseAction(cancelServiceTemplateChoice);
   $('#saveServiceTemplateChoice').onclick=async()=>{
     const button=$('#saveServiceTemplateChoice');
@@ -6528,61 +9140,120 @@ function cancelChurchSuiteOperation(operation=null){
   if(churchSuiteActiveOperation===target)churchSuiteActiveOperation=null;
 }
 
-function openChurchSuiteImportModeChoice({title='ChurchSuite import',onConfirm,onBack=null,useServiceDefaults=false}){
+function exitChurchSuiteSyncToPlanner(){
+  cancelChurchSuiteOperation();
+  closeSheetSafely();
+  openLPOnlyView=false;
+  document.body.classList.remove('openlp-only-view');
+  rememberLastScreen('planner');
+  render();
+}
+
+function exitChurchSuiteSyncToDashboard(){
+  cancelChurchSuiteOperation();
+  closeSheetSafely();
+  openDashboard();
+}
+
+function exitChurchSuiteSyncToServices(){
+  cancelChurchSuiteOperation();
+  closeSheetSafely();
+  rememberLastScreen('services');
+  document.querySelector('main.shell').hidden=true;
+  $('#servicesPage').hidden=false;
+  $('#plannerHeaderNav').hidden=true;
+  $('#servicesHeaderNav').hidden=false;
+  $('#plannerFooter').hidden=true;
+  $('#servicesFooter').hidden=false;
+  document.body.classList.add('services-page-open');
+  renderServicesPage();
+}
+
+function openChurchSuiteImportModeChoice({title='ChurchSuite import',onConfirm,onBack=null,useServiceDefaults=false,preferredTemplateId='',preferTemplateMode=false,templatePerService=false,backLabel='Back'}){
   if(!churchSuiteEnabled()){
     if(onBack)onBack(); else closeSheetSafely();
     return;
   }
+
+  const preferredTemplate=preferredTemplateId?serviceTemplateById(preferredTemplateId):null;
+  const templateModePreferred=!!(serviceTemplates().length&&(preferredTemplate||preferTemplateMode));
+  let selectedMode=templateModePreferred?'template':'';
+  let advancing=false;
+
+  const selectedSummary=()=>{
+    if(selectedMode==='template'){
+      return preferredTemplate
+        ?`<strong>Selected: Use a Template</strong><span>Default template: ${esc(preferredTemplate.name)}</span>`
+        :`<strong>Selected: Use a Template</strong><span>Each service will use its own service-type default template on the next screen.</span>`;
+    }
+    if(selectedMode==='songs')return '<strong>Selected: Songs Only</strong><span>Only ChurchSuite songs will be synced.</span>';
+    if(selectedMode==='all')return '<strong>Selected: All Configured Types</strong><span>All configured ChurchSuite Types plus songs will be synced.</span>';
+    if(selectedMode==='select')return '<strong>Selected: Select Types</strong><span>You will choose the configured Types on the next screen.</span>';
+    return '<strong>Choose a sync method</strong><span>Select one of the options above to continue.</span>';
+  };
+
   openSheet(`<h2>${esc(title)}</h2>
     <p class="meta">Choose what to import from ChurchSuite for this operation.</p>
-    <div class="choice-grid cs-import-mode-grid">
-      ${serviceTemplates().length?`<button class="choice" type="button" data-cs-import-mode="template"><strong>Use a Template</strong><span>Use a saved service pattern; ChurchSuite-controlled slots sync while template items stay local.</span></button>`:''}
-      <button class="choice" type="button" data-cs-import-mode="songs"><strong>Songs only</strong><span>Import only ChurchSuite song positions.</span></button>
-      <button class="choice" type="button" data-cs-import-mode="all"><strong>All configured Types</strong><span>Import songs plus every configured ChurchSuite Type.</span></button>
-      <button class="choice" type="button" data-cs-import-mode="select"><strong>Select Types</strong><span>Choose which ChurchSuite Types to use for this import.</span></button>
+    <div class="choice-grid cs-import-mode-grid ${templateModePreferred?'service-default-template-state':''}">
+      ${serviceTemplates().length?`<button class="choice cs-import-go-to ${templateModePreferred?'selected default-template-choice':''}" type="button" data-cs-import-mode="template" aria-pressed="${templateModePreferred?'true':'false'}"><strong>Use a Template</strong><span>${preferredTemplate?`Default for this service: ${esc(preferredTemplate.name)}.`:templatePerService&&templateModePreferred?'Recommended. Each selected service will have its own default template preselected on the next screen.':'Once you have tested a few syncs and saved a template, this will be your go-to choice. The template controls which ChurchSuite slots sync and which retain local settings.'}</span></button>`:''}
+      <button class="choice cs-import-go-to" type="button" data-cs-import-mode="songs" aria-pressed="false"><strong>Songs Only</strong><span>Does what it says — updates songs into the local service. In a service, you can manually disable syncing for a song to keep your local selection.</span></button>
+      <button class="choice" type="button" data-cs-import-mode="all" aria-pressed="false"><strong>All Configured Types</strong><span>Once you have set ChurchSuite service component Types, this will sync them all. Songs sync by default.</span></button>
+      <button class="choice" type="button" data-cs-import-mode="select" aria-pressed="false"><strong>Select Types</strong><span>You’ll be given the opportunity to choose what to sync based on your configured Types.</span></button>
     </div>
-    <div class="sheet-actions"><button class="secondary" id="backCsImportMode">Back</button></div>`);
-  let advancing=false;
-  let transitionToken=0;
+    <div id="csImportModeSummary" class="cs-import-mode-summary">${selectedSummary()}</div>
+    <div class="sheet-actions">
+      <button class="secondary" id="backCsImportMode">${esc(backLabel)}</button>
+      <button class="primary" id="continueCsImportMode" ${selectedMode?'':'disabled'}>Continue</button>
+    </div>`);
+
   const leaveModeChoice=()=>{
-    transitionToken++;
-    advancing=false;
+    if(advancing)return;
     cancelChurchSuiteOperation();
     onBack?onBack():sheet.close();
   };
-  $('#backCsImportMode').textContent='Back';
   $('#backCsImportMode').onclick=leaveModeChoice;
   setSheetCloseAction(leaveModeChoice);
 
+  const refreshSelection=()=>{
+    body.querySelectorAll('[data-cs-import-mode]').forEach(btn=>{
+      const selected=btn.dataset.csImportMode===selectedMode;
+      btn.classList.toggle('selected',selected);
+      btn.classList.toggle('default-template-choice',selected&&selectedMode==='template'&&templateModePreferred);
+      btn.setAttribute('aria-pressed',selected?'true':'false');
+    });
+    const summary=$('#csImportModeSummary');
+    if(summary)summary.innerHTML=selectedSummary();
+    const cont=$('#continueCsImportMode');
+    if(cont)cont.disabled=!selectedMode;
+  };
+
   body.querySelectorAll('[data-cs-import-mode]').forEach(btn=>btn.onclick=()=>{
     if(advancing)return;
-    advancing=true;
-    const token=++transitionToken;
-    body.querySelectorAll('[data-cs-import-mode]').forEach(other=>{
-      other.classList.toggle('selected',other===btn);
-      other.disabled=true;
-    });
-    const strong=btn.querySelector('strong');
-    if(strong)strong.textContent=`✓ ${strong.textContent.replace(/^✓\s*/,'')}`;
-    btn.classList.add('choice-working');
-
-    // Keep an escape route visible while advancing. Back/× invalidates the
-    // pending transition so its callback cannot open another import screen.
-    $('#backCsImportMode').disabled=false;
-    $('#backCsImportMode').textContent='Cancel';
-
-    const advance=()=>{
-      if(token!==transitionToken)return;
-      if(btn.dataset.csImportMode==='template'){
-        if(useServiceDefaults)onConfirm('template','');
-        else openTemplateChooser({
-          onBack:()=>openChurchSuiteImportModeChoice({title,onConfirm,onBack,useServiceDefaults}),
-          onChoose:template=>onConfirm('template',template.id)
-        });
-      }else onConfirm(btn.dataset.csImportMode);
-    };
-    setTimeout(advance,40);
+    selectedMode=btn.dataset.csImportMode||'';
+    refreshSelection();
   });
+
+  $('#continueCsImportMode').onclick=()=>{
+    if(advancing||!selectedMode)return;
+    advancing=true;
+    body.querySelectorAll('[data-cs-import-mode],#backCsImportMode,#continueCsImportMode').forEach(el=>el.disabled=true);
+    $('#continueCsImportMode').textContent='Continuing…';
+
+    if(selectedMode==='template'){
+      if(templatePerService){
+        onConfirm('template','');
+        return;
+      }
+      openTemplateChooser({
+        preferredId:preferredTemplateId,
+        onBack:()=>openChurchSuiteImportModeChoice({title,onConfirm,onBack,useServiceDefaults,preferredTemplateId,preferTemplateMode,templatePerService,backLabel}),
+        onChoose:template=>onConfirm('template',template.id)
+      });
+      return;
+    }
+
+    onConfirm(selectedMode);
+  };
 }
 
 function openChurchSuiteTypeSelection({scan,url='',existingServiceId=null,scanOptions={},onConfirm,onBack=null}){
@@ -6636,6 +9307,115 @@ function openChurchSuiteTypeSelection({scan,url='',existingServiceId=null,scanOp
   };
 }
 
+function churchSuiteSyncExitForOrigin(origin){
+  if(origin==='planner')return exitChurchSuiteSyncToPlanner;
+  if(origin==='dashboard')return exitChurchSuiteSyncToDashboard;
+  return exitChurchSuiteSyncToServices;
+}
+
+function openRegularChurchSuiteSyncForService(service,origin='services'){
+  if(!service)return;
+  const preferredTemplateId=defaultTemplateIdForService(service);
+  openChurchSuiteImportModeChoice({
+    title:`Sync ${service.title}`,
+    onBack:churchSuiteSyncExitForOrigin(origin),
+    backLabel:'Done',
+    useServiceDefaults:origin!=='services',
+    preferredTemplateId,
+    onConfirm:(importMode,templateId='')=>openChurchSuiteServiceScan(
+      actualChurchSuitePlanUrl(service),
+      service.id,
+      {
+        theme:service.theme,
+        planId:service.churchSuitePlanId||null,
+        importMode,
+        templateId:templateId||preferredTemplateId,
+        syncOrigin:origin
+      }
+    )
+  });
+}
+
+async function expressChurchSuiteSync(service,origin='services'){
+  if(!churchSuiteEnabled()||!service||!hasChurchSuitePlanReference(service))return;
+  closeAppMenus();
+
+  const url=actualChurchSuitePlanUrl(service);
+  const preferredTemplateId=defaultTemplateIdForService(service);
+  // Express must be deterministic: use the service-type default template when
+  // available; otherwise use all configured Types.
+  const importMode=preferredTemplateId?'template':'all';
+  const scanOptions={
+    theme:service.theme,
+    planId:service.churchSuitePlanId||null,
+    importMode,
+    templateId:preferredTemplateId||'',
+    syncOrigin:origin,
+    expressSync:true
+  };
+
+  openSheet(`<h2>ChurchSuite Sync</h2>
+    <div class="express-sync-working">
+      <div class="express-sync-spinner" aria-hidden="true"></div>
+      <div><strong>Working…</strong><span>Reading ChurchSuite and preparing the default sync.</span></div>
+    </div>
+    <div class="sheet-actions">
+      <button class="secondary" id="cancelExpressSync">Back</button>
+    </div>`);
+
+  const leave=()=>churchSuiteSyncExitForOrigin(origin)();
+  $('#cancelExpressSync').onclick=leave;
+  setSheetCloseAction(leave);
+
+  try{
+    const result=await scanChurchSuitePlan(url,scanOptions.planId);
+    if(!result?.plan)throw new Error(result?.error||'ChurchSuite did not return a service plan.');
+    openChurchSuiteScanPreview(
+      url,
+      service.id,
+      {...scanOptions,planId:result.plan.id},
+      result.plan
+    );
+  }catch(err){
+    openSheet(`<h2>ChurchSuite sync failed</h2>
+      <div class="warning-card"><strong>Could not read the ChurchSuite plan.</strong><p>${esc(err?.message||String(err))}</p></div>
+      <div class="sheet-actions"><button class="primary" id="expressSyncDone">Done</button></div>`);
+    $('#expressSyncDone').onclick=leave;
+    setSheetCloseAction(leave);
+  }
+}
+
+function reopenSingleChurchSuiteSyncChoice(url,existingServiceId,scanOptions={}){
+  const service=existingServiceId
+    ?state.services.find(row=>String(row.id)===String(existingServiceId))
+    :null;
+  if(!service){
+    churchSuiteSyncExitForOrigin(scanOptions.syncOrigin)();
+    return;
+  }
+
+  const origin=['planner','dashboard'].includes(scanOptions.syncOrigin)?scanOptions.syncOrigin:'services';
+  const preferredTemplateId=defaultTemplateIdForService(service);
+  openChurchSuiteImportModeChoice({
+    title:`Sync ${service.title}`,
+    onBack:churchSuiteSyncExitForOrigin(origin),
+    backLabel:'Done',
+    useServiceDefaults:true,
+    preferredTemplateId,
+    onConfirm:(importMode,templateId='')=>openChurchSuiteServiceScan(
+      url||actualChurchSuitePlanUrl(service),
+      service.id,
+      {
+        theme:service.theme,
+        planId:service.churchSuitePlanId||null,
+        importMode,
+        templateId:templateId||preferredTemplateId,
+        syncOrigin:origin
+      }
+    )
+  });
+}
+
 function openChurchSuiteServiceScan(url,existingServiceId=null,scanOptions={}){
   if(!churchSuiteEnabled()){
     closeSheetSafely();
@@ -6677,9 +9457,12 @@ function openChurchSuiteServiceScan(url,existingServiceId=null,scanOptions={}){
 
   const leaveChurchSuiteScan=()=>{
     cancelChurchSuiteOperation();
-    closeSheetSafely();
-    if(existing)openServicesPage();
-    else openAddServiceFromServicesPage();
+    if(existing){
+      reopenSingleChurchSuiteSyncChoice(url,existingServiceId,scanOptions);
+    }else{
+      closeSheetSafely();
+      openAddServiceFromServicesPage();
+    }
   };
   $('#backFromChurchSuiteScan').onclick=leaveChurchSuiteScan;
   setSheetCloseAction(leaveChurchSuiteScan);
@@ -6715,7 +9498,7 @@ function openChurchSuiteServiceScan(url,existingServiceId=null,scanOptions={}){
         <p class="meta">Check the ChurchSuite connection in Settings and confirm the API user has Planning access.</p>
         <div class="sheet-actions"><button class="secondary" id="scanFailureBack">Back</button><button class="primary" id="scanFailureDone">Done</button></div>`);
       $('#scanFailureBack').onclick=()=>openChurchSuiteServiceScan(url,existingServiceId,scanOptions);
-      const leaveScanFailure=()=>closeSheetSafely();
+      const leaveScanFailure=()=>churchSuiteSyncExitForOrigin(scanOptions.syncOrigin)();
       $('#scanFailureDone').onclick=leaveScanFailure;
       setSheetCloseAction(leaveScanFailure);
     }
@@ -6738,6 +9521,10 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
 
   const importMode=scanOptions.importMode||existing?.churchSuiteImportMode||state.settings.churchSuiteDefaultImportMode||'all';
   const mappedResult=mapChurchSuiteScanItems(preview.items,importMode==='template'?'all':importMode,scanOptions.selectedTypes||null);
+  const selectedTemplate=importMode==='template'?serviceTemplateById(scanOptions.templateId):null;
+  const templatePreviewItems=selectedTemplate
+    ?previewTemplateResult(selectedTemplate,mappedResult.mapped,existing?.items||[])
+    :null;
   const destructive=[];
 
   if(existing){
@@ -6750,7 +9537,9 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
 
     const existingImported=(existing.items||[]).filter(i=>i.churchSuiteSourceId);
     if(existingImported.length){
-      destructive.push(`${existingImported.length} previously imported ChurchSuite item${existingImported.length===1?'':'s'} will be replaced by the new scan`);
+      destructive.push(importMode==='template'
+        ?`Template-controlled ChurchSuite positions will be refreshed; template/local positions will be retained`
+        :`${existingImported.length} previously imported ChurchSuite item${existingImported.length===1?'':'s'} will be replaced by the new scan`);
     }
   }
 
@@ -6768,7 +9557,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
     scanWarnings.push(`${mappedResult.missingSongs.length} song${mappedResult.missingSongs.length===1?' is':'s are'} not in the song library.`);
   }
 
-  openSheet(`<h2>Confirm ChurchSuite insert</h2>
+  openSheet(`<h2>${existing?'Confirm ChurchSuite Sync':'Confirm ChurchSuite insert'}</h2>
     <div class="cs-scan-source">
       <strong>${esc(preview.title)}</strong>
       <a href="${esc(url)}" target="_blank" rel="noopener">Open plan ↗</a>
@@ -6778,15 +9567,23 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       <div><small>Title</small><strong>${esc(preview.title)}</strong></div>
       <div><small>Date</small><strong>${esc(preview.dateISO||preview.dateText||'Not found')}</strong></div>
       <div><small>Plan items</small><strong>${preview.items.length}</strong></div>
-      <div><small>Items to insert</small><strong>${mappedResult.mapped.length}</strong></div>
+      <div><small>${importMode==='template'?'Resulting service items':'Items to insert'}</small><strong>${importMode==='template'?(templatePreviewItems?.length||0):mappedResult.mapped.length}</strong></div>
       <div><small>OpenLP theme</small><strong>${esc(scanOptions.theme||existing?.theme||'Default')}</strong></div>
       <div><small>ChurchSuite import</small><strong>${esc(importModeLabel(importMode,scanOptions.templateId||''))}</strong></div>
       ${importMode==='select'?`<div><small>Types selected</small><strong>${esc((scanOptions.selectedTypes||[]).join(', ')||'None')}</strong></div>`:''}
     </div>
 
-    <div class="cs-scan-items">
-      ${churchSuiteScanItemPreview(preview.items)}
-    </div>
+    ${importMode==='template'?`
+      <div class="template-result-preview-heading">
+        <strong>Service after template sync</strong>
+        <p class="meta">This is the service the planner expects after applying <strong>${esc(selectedTemplate?.name||'the selected template')}</strong>. Unused raw ChurchSuite rows are not shown as though they will be inserted.</p>
+      </div>
+      ${templateResultPreviewHtml(templatePreviewItems||[])}
+    `:`
+      <div class="cs-scan-items">
+        ${churchSuiteScanItemPreview(preview.items)}
+      </div>
+    `}
 
     ${scanWarnings.length?`
       <div class="warning-card">
@@ -6805,7 +9602,8 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       <div class="warning-card churchsuite-types-note">
         <strong>Some ChurchSuite Types are not configured</strong>
         <p>Missing Types: ${mappedResult.unmappedTypes.map(esc).join(', ')}.</p>
-        <p>If expected service items are missing from this scan, update <strong>Settings → Extensions → ChurchSuite service-plan types</strong>, then scan the plan again.</p>
+        <p>These Types can be added to Settings now, mapped to OpenLP Planner items, and given a default local-edit policy.</p>
+        ${importMode==='all'?`<button class="secondary" type="button" id="setupDiscoveredChurchSuiteTypes">Set up these Types</button>`:''}
       </div>
     `:importMode==='songs'
       ?`<p class="meta">Songs-only mode intentionally ignores other ChurchSuite service details. Add images, video, PDFs and other presentation material manually in the planner.</p>`
@@ -6821,7 +9619,7 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
     `:''}
 
     ${destructive.length
-      ?`<p class="meta">Review the scanned plan above. The exact local changes and confirmation are pinned below.</p>`
+      ?`<p class="meta">Review the scanned plan above. The exact local changes are summarised below.</p>`
       :`<p class="meta">This will create a new service from the scanned ChurchSuite plan. The OpenLP theme remains independent of ChurchSuite.</p>`
     }
 
@@ -6832,29 +9630,29 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
             <strong>What will change</strong>
             <ul>${destructive.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
           </div>
-          <label class="churchsuite-confirm-check">
-            <input type="checkbox" id="confirmChurchSuiteReplace">
-            <span>I understand these ChurchSuite-imported service details/items will be replaced.</span>
-          </label>
         `:''}
         <div class="churchsuite-confirm-actions">
           <button class="secondary" id="backToChurchSuiteScan">Back</button>
           <button class="primary" id="insertChurchSuitePlan"
-            ${destructive.length||!preview.dateISO||!preview.items.length?'disabled':''}>
+            ${!preview.dateISO||!preview.items.length?'disabled':''}>
             ${existing?'Update service':'Insert service'}
           </button>
         </div>
       </div>
     </div>`);
 
-  const leaveChurchSuiteScanPreview=()=>openChurchSuiteServiceScan(url,existingServiceId,scanOptions);
+  const leaveChurchSuiteScanPreview=()=>scanOptions.expressSync
+    ?reopenSingleChurchSuiteSyncChoice(url,existingServiceId,{...scanOptions,expressSync:false})
+    :openChurchSuiteServiceScan(url,existingServiceId,scanOptions);
   $('#backToChurchSuiteScan').onclick=leaveChurchSuiteScanPreview;
   setSheetCloseAction(leaveChurchSuiteScanPreview);
 
-  if($('#confirmChurchSuiteReplace')){
-    $('#confirmChurchSuiteReplace').onchange=()=>{
-      $('#insertChurchSuitePlan').disabled=
-        !$('#confirmChurchSuiteReplace').checked || !preview.dateISO || !preview.items.length;
+  if($('#setupDiscoveredChurchSuiteTypes')){
+    $('#setupDiscoveredChurchSuiteTypes').onclick=()=>{
+      openChurchSuiteDiscoveredTypeSetup(mappedResult.unmappedTypes,{
+        onCancel:()=>openChurchSuiteScanPreview(url,existingServiceId,scanOptions,scan,diagnostics),
+        onSaved:()=>openChurchSuiteScanPreview(url,existingServiceId,scanOptions,scan,diagnostics)
+      });
     };
   }
 
@@ -6875,6 +9673,11 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       mappedResult.mapped=await applyTemplateToMappedItems(template,mappedResult.mapped,serviceTargetId,existing?.items||[]);
     }
 
+    // Bible items mapped from ChurchSuite are parsed during preview. Once the
+    // user confirms the sync, make a best-effort attempt to populate passage
+    // text using the same Bible Gateway fetch/parser available in the editor.
+    await autoPopulateChurchSuiteBibleItems(mappedResult.mapped);
+
     if(existing){
       const previousImported=(existing.items||[]).filter(i=>i.churchSuiteSourceId);
       const activeTemplate=importMode==='template'?serviceTemplateById(scanOptions.templateId):null;
@@ -6894,10 +9697,14 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
         nextItem.id=previous.id;
         delete nextItem.churchSuiteExcludedFromLastSync;
         preserveLocalAttachments(previous,nextItem);
+        if(typeof previous.churchSuiteKeepLocalOverride==='boolean'){
+          nextItem.churchSuiteKeepLocalOverride=previous.churchSuiteKeepLocalOverride;
+          nextItem.retainOnChurchSuiteSync=previous.churchSuiteKeepLocalOverride;
+        }
 
         // An explicitly retained Planner item wins over the incoming ChurchSuite copy.
         // Keep the source identity so the item still occupies its ChurchSuite slot.
-        if(previous.retainOnChurchSuiteSync){
+        if(nextItem.retainOnChurchSuiteSync&&previous.churchSuiteLocalChanged){
           return {...structuredClone(previous),churchSuiteSourceId:nextItem.churchSuiteSourceId,churchSuiteType:nextItem.churchSuiteType,churchSuiteExcludedFromLastSync:false};
         }
 
@@ -6927,19 +9734,6 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
           nextItem.projected=false;
           nextItem.ready=true;
           nextItem.detail='Bible projection not required';
-        }
-
-        if(nextItem.type==='song'&&(previous.songId||previous.serviceSong)){
-          nextItem.songId=previous.songId;
-          nextItem.title=previous.title;
-          nextItem.ready=true;
-          nextItem.projected=true;
-          nextItem.verse=previous.verse||nextItem.verse||'';
-          nextItem.musicNote=previous.musicNote||nextItem.musicNote||'';
-          nextItem.detail=previous.churchSuiteWritePending
-            ?'Available locally · ChurchSuite update pending'
-            :(previous.detail||nextItem.detail);
-          nextItem.churchSuiteWritePending=!!previous.churchSuiteWritePending;
         }
 
         return nextItem;
@@ -6973,8 +9767,13 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
       }
 
       sheet.close();
-      closeServicesPage();
-      render();
+      if(scanOptions.syncOrigin==='dashboard'){
+        await openDashboard();
+      }else if(scanOptions.syncOrigin==='services'){
+        exitChurchSuiteSyncToServices();
+      }else{
+        exitChurchSuiteSyncToPlanner();
+      }
       return;
     }
 
@@ -7014,8 +9813,13 @@ function openChurchSuiteScanPreview(url,existingServiceId=null,scanOptions={},sc
     }
 
     sheet.close();
-    closeServicesPage();
-    render();
+    if(scanOptions.syncOrigin==='dashboard'){
+      await openDashboard();
+    }else if(scanOptions.syncOrigin==='services'){
+      exitChurchSuiteSyncToServices();
+    }else{
+      exitChurchSuiteSyncToPlanner();
+    }
   };
 }
 async function openChurchSuiteAutoSyncPreview(daysBack=0){
@@ -7166,6 +9970,8 @@ async function openChurchSuiteAutoSyncPreview(daysBack=0){
       openChurchSuiteImportModeChoice({
         title:`Import / sync ${selectedPlans.length} service${selectedPlans.length===1?'':'s'}`,
         useServiceDefaults:true,
+        preferTemplateMode:true,
+        templatePerService:true,
         onBack:()=>openChurchSuiteAutoSyncPreview(requestedDaysBack),
         onConfirm:async(importMode,templateId='')=>{
           if(importMode==='template'){
@@ -7387,6 +10193,17 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
     return {plan,existing,mapped,template,resolvedTemplateId};
   });
 
+  if(importMode==='all'){
+    const discovered=[...new Set(rows.flatMap(row=>row.mapped.unmappedTypes||[]))];
+    if(discovered.length){
+      openChurchSuiteDiscoveredTypeSetup(discovered,{
+        onCancel:()=>openChurchSuiteAutoSyncPreview(syncDaysBack),
+        onSaved:()=>openChurchSuiteBatchPreview(plans,{importMode,selectedTypes,syncDaysBack,templateId,templateSelections})
+      });
+      return;
+    }
+  }
+
   if(importMode==='template'){
     const missing=rows.filter(r=>!r.template);
     if(missing.length){
@@ -7412,7 +10229,7 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
         <div><strong>${esc(plan.title)}</strong><small>${esc(plan.dateISO)} · ${plan.items?.length||0} ChurchSuite items · ${mapped.mapped.length} to import${importMode==='template'&&template?` · Theme: ${esc(template.theme||'Default')}`:''}</small></div>
         <span>${existing?'Sync existing':'Add new'}</span>
       </div>`).join('')}</div>
-    <p class="meta">Review the selected services above. The change summary and required confirmation stay pinned below.</p>
+    <p class="meta">Review the selected services above. The change summary stays pinned below.</p>
     <div class="sheet-actions">
       <div class="churchsuite-confirm-footer has-changes">
         <div class="churchsuite-confirm-summary">
@@ -7422,13 +10239,9 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
             ${rows.map(({plan,existing,mapped})=>`<li><strong>${esc(plan.title)}</strong> — ${existing?'sync existing service':'add new service'}; ${mapped.mapped.length} item${mapped.mapped.length===1?'':'s'} to import.</li>`).join('')}
           </ul>
         </div>
-        <label class="churchsuite-confirm-check">
-          <input type="checkbox" id="confirmCsBatch">
-          <span>I understand and want to process these services.</span>
-        </label>
         <div class="churchsuite-confirm-actions">
           <button class="secondary" id="backCsBatch">Back</button>
-          <button class="primary" id="runCsBatch" disabled>Import/Sync</button>
+          <button class="primary" id="runCsBatch">Import/Sync</button>
         </div>
       </div>
     </div>`);
@@ -7436,7 +10249,6 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
   const leaveCsBatch=()=>{cancelChurchSuiteOperation();openChurchSuiteAutoSyncPreview(syncDaysBack);};
   $('#backCsBatch').onclick=leaveCsBatch;
   setSheetCloseAction(leaveCsBatch);
-  $('#confirmCsBatch').onchange=()=>$('#runCsBatch').disabled=!$('#confirmCsBatch').checked;
   let batchStarted=false;
   $('#runCsBatch').onclick=async()=>{
     if(batchStarted)return;
@@ -7486,8 +10298,12 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
           if(!previous)return nextItem;
           nextItem.id=previous.id;
           preserveLocalAttachments(previous,nextItem);
+          if(typeof previous.churchSuiteKeepLocalOverride==='boolean'){
+            nextItem.churchSuiteKeepLocalOverride=previous.churchSuiteKeepLocalOverride;
+            nextItem.retainOnChurchSuiteSync=previous.churchSuiteKeepLocalOverride;
+          }
 
-          if(previous.retainOnChurchSuiteSync){
+          if(nextItem.retainOnChurchSuiteSync&&previous.churchSuiteLocalChanged){
             return {...structuredClone(previous),churchSuiteSourceId:nextItem.churchSuiteSourceId,churchSuiteType:nextItem.churchSuiteType,churchSuiteExcludedFromLastSync:false};
           }
 
@@ -7517,21 +10333,6 @@ function openChurchSuiteBatchPreview(plans,{importMode='all',selectedTypes=null,
             nextItem.detail='Bible projection not required';
           }
 
-          if(nextItem.type==='song'&&(previous.songId||previous.serviceSong)){
-            nextItem.songId=previous.songId||null;
-            nextItem.serviceSong=previous.serviceSong?structuredClone(previous.serviceSong):null;
-            nextItem.title=previous.title;
-            nextItem.ready=true;
-            nextItem.projected=true;
-            nextItem.verse=previous.verse||nextItem.verse||'';
-            nextItem.musicNote=previous.musicNote||nextItem.musicNote||'';
-            nextItem.detail=previous.serviceSong
-              ?'Local copy updated · service only'
-              :(previous.churchSuiteWritePending
-                ?'Local copy updated · saved to library'
-                :(previous.detail||nextItem.detail));
-            nextItem.churchSuiteWritePending=!!previous.churchSuiteWritePending;
-          }
           return nextItem;
         });
 
@@ -7667,7 +10468,7 @@ function openNewService(){
 
   $('#cancelNewService').onclick=openServiceSwitcher;
 
-  $('#createService').onclick=()=>{
+  $('#createService').onclick=async()=>{
     const dateISO=$('#newServiceDate').value;
     if(!dateISO){appAlert('Choose a date.');return;}
 
@@ -7708,7 +10509,15 @@ function openNewService(){
     state.services.push(service);
     state.activeServiceId=id;
     persistPlanner();
-    createRemoteService(service);
+    try{
+      await createRemoteService(service);
+    }catch(err){
+      state.services=state.services.filter(row=>String(row.id)!==String(id));
+      state.activeServiceId=state.services[0]?.id||'';
+      persistPlanner();
+      await appAlert(err?.message||'The service could not be created in the shared planner.',{title:'Service not created'});
+      return;
+    }
     sheet.close();
     render();
   };
@@ -7758,10 +10567,10 @@ const CHURCHSUITE_TYPE_IMPORT_OPTIONS=[
 ];
 
 const DEFAULT_CHURCHSUITE_TYPES=[
-  {name:'Scripture Reading',importAs:'bible'},
-  {name:'Announcements',importAs:'text'},
-  {name:'Transition',importAs:'text'},
-  {name:'Welcome',importAs:'text'}
+  {name:'Scripture Reading',importAs:'bible',keepLocalChanges:false},
+  {name:'Announcements',importAs:'text',keepLocalChanges:false},
+  {name:'Transition',importAs:'text',keepLocalChanges:false},
+  {name:'Welcome',importAs:'text',keepLocalChanges:false}
 ];
 
 function churchSuiteTypeRows(types){
@@ -7770,6 +10579,10 @@ function churchSuiteTypeRows(types){
       <input class="cs-type-name" data-cs-type-name="${index}" value="${esc(row.name||'')}" placeholder="ChurchSuite Type name">
       <select class="cs-type-map" data-cs-type-map="${index}">
         ${CHURCHSUITE_TYPE_IMPORT_OPTIONS.map(([value,label])=>`<option value="${value}" ${row.importAs===value?'selected':''}>${label}</option>`).join('')}
+      </select>
+      <select class="cs-type-local-policy" data-cs-type-local-policy="${index}" title="What should happen to local edits on future ChurchSuite syncs?">
+        <option value="keep" ${(typeof row.keepLocalChanges==='boolean'?row.keepLocalChanges:defaultKeepLocalForChurchSuiteImport(row.importAs))?'selected':''}>Keep local edits</option>
+        <option value="update" ${!(typeof row.keepLocalChanges==='boolean'?row.keepLocalChanges:defaultKeepLocalForChurchSuiteImport(row.importAs))?'selected':''}>Update from ChurchSuite</option>
       </select>
       <button type="button" class="item-delete cs-type-delete" data-cs-type-delete="${index}" title="Remove type" aria-label="Remove type">
         <svg class="trash-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" fill="currentColor"/></svg>
@@ -7790,7 +10603,7 @@ function openProfile(){
     <div class="profile-avatar">${esc((name||'Me').trim().split(/\s+/).slice(0,2).map(x=>x[0]?.toUpperCase()||'').join('')||'ME')}</div>
     <div class="profile-info"><h2>${esc(name)}</h2><p>${esc(email)}</p><span>${esc(method)} · ${esc(levelName)}</span></div>
   </div><div class="sheet-actions"><button class="secondary" id="profileDone">Done</button>
-  <button class="secondary" id="profileLogout">Sign out</button>${level>=3?'<button class="primary" id="profileSettings">Settings</button>':''}</div>`);
+  <button class="secondary" id="profileLogout">Sign out</button></div>`);
   $('#profileDone').onclick=()=>sheet.close();
   $('#profileLogout').onclick=async()=>{
     const button=$('#profileLogout');button.disabled=true;button.textContent='Signing out…';
@@ -7798,7 +10611,6 @@ function openProfile(){
     try{[STORAGE_KEY,SONGS_KEY,LAST_SCREEN_KEY,editorNameKey,FLOAT_ADD_KEY].forEach(key=>localStorage.removeItem(key))}catch(_){}
     location.replace('/login');
   };
-  if($('#profileSettings'))$('#profileSettings').onclick=openSettings;
 }
 
 async function openPlannerUserManagement(){
@@ -8081,7 +10893,30 @@ function renderMicrosoftSsoRenewalWarning(){
   brand.appendChild(bar);
 }
 
-function openSettings(){
+function currentSettingsReturnContext(){
+  if(document.body.classList.contains('dashboard-page-open'))return 'dashboard';
+  if(document.body.classList.contains('services-page-open'))return 'services';
+  return 'planner';
+}
+function returnFromSettings(context){
+  closeSheetSafely();
+  if(context==='dashboard'){ openDashboard(); return; }
+  if(context==='services'){ openServicesPage(); return; }
+  rememberLastScreen('planner');
+  document.querySelector('main.shell').hidden=false;
+  $('#dashboardPage').hidden=true;
+  $('#servicesPage').hidden=true;
+  $('#dashboardHeaderNav').hidden=true;
+  $('#servicesHeaderNav').hidden=true;
+  $('#plannerHeaderNav').hidden=false;
+  $('#servicesFooter').hidden=true;
+  $('#plannerFooter').hidden=false;
+  document.body.classList.remove('dashboard-page-open','services-page-open');
+  render();
+}
+async function openSettings(initialTab='general'){
+  const settingsReturnContext=currentSettingsReturnContext();
+  if(remoteAvailable)await refreshSharedPlannerState();
   if(Number(authenticatedUser?.accessLevel||0)<3){appAlert('Administrator access is required for Settings.');return;}
   const s=state.settings;
 
@@ -8096,7 +10931,7 @@ function openSettings(){
 
     <div class="settings-section">
       <h3>OpenLP compatibility</h3>
-      <p class="meta"><strong>This Service Planner is built for OpenLP 3.1.7.</strong> We recommend using OpenLP 3.1.7 on the projection computer(s) with this planner. Using a different OpenLP version may cause imported or exported services, songs or media to behave differently.</p>
+      <p class="meta"><strong>Built for OpenLP 3.1.7.</strong> Other versions may import or export differently.</p>
     </div>
 
     <div class="settings-section">
@@ -8222,23 +11057,30 @@ function openSettings(){
     </div>
 
     <div class="settings-section">
-      <h3>OpenLP song library</h3>
+      <h3>Song library organisation</h3>
+      <p class="meta">Manage the categories/classifications used to organise and filter songs in the shared Song Library.</p>
+      <div class="settings-actions">
+        <button class="primary" type="button" id="manageSongClassifications">Manage classifications</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Song library import / export</h3>
       <div class="library-status">
         <strong>${esc(s.libraryFileName||'No database imported')}</strong>
         <span>${s.librarySongCount||0} songs${s.libraryImportedAt?` · imported ${esc(s.libraryImportedAt)}`:''}</span>
       </div>
       <div class="settings-actions">
-        <button class="primary" type="button" id="manageSongClassifications">Manage classifications</button>
         <label class="secondary file-button">Import songs.sqlite<input type="file" id="sqliteImport" accept=".sqlite,.db,application/x-sqlite3"></label>
         <button class="secondary" id="sqliteExport">Export songs.sqlite</button>
         <button class="secondary" id="openLyricsZipExport">Export OpenLyrics ZIP</button>
       </div>
-      <p class="meta">In the Cloudflare version, import will replace/update the shared song library and export will generate an OpenLP-compatible SQLite database. This browser prototype records the selected database but does not rewrite SQLite yet.</p>
+      <p class="meta">Import updates the shared Song Library. Export creates OpenLP-compatible song data for transfer or backup.</p>
     </div>
 
     <div class="settings-section">
       <h3>Song statistics data</h3>
-      <p class="meta">Song statistics are recorded when OpenLP services are downloaded or shared. Deleting statistics does not delete songs or service plans, but the deleted usage history cannot be reconstructed automatically.</p>
+      <p class="meta">Statistics record song use when services are downloaded or shared. Deleting them does not delete songs or services.</p>
       <div class="statistics-delete-card">
         <div>
           <strong>Delete a date range</strong>
@@ -8337,7 +11179,59 @@ function openSettings(){
 
     <div class="settings-section">
       <h3>Extensions</h3>
-      <p class="meta">Extension settings are visible to all planner users. Secret values are obscured after entry and are never displayed back in plain text.</p>
+      <p class="meta">Extension settings are shared. Saved secrets are hidden.</p>
+
+      <div class="extension-config songselect-extension-settings">
+        <div class="settings-subsection-head">
+          <div>
+            <h4>SongSelect</h4>
+            <p class="meta">Guided import using SongSelect's normal website and downloaded lyrics file.</p>
+          </div>
+          <label class="toggle compact-toggle"><span>Enable</span><input id="songSelectEnabled" type="checkbox" ${s.songSelectEnabled!==false?'checked':''}></label>
+        </div>
+        <div id="songSelectSettings" ${s.songSelectEnabled!==false?'':'hidden'}>
+          <div class="field">
+            <label>SongSelect text search URL</label>
+            <input id="songSelectSearchUrl" value="${esc(normaliseSongSelectSearchUrlSetting(s.songSelectSearchUrl))}" placeholder="${esc(DEFAULT_SONGSELECT_SEARCH_URL)}">
+            <small>Use <code>{search}</code> where the text belongs. Spaces are sent as <code>+</code>.</small>
+          </div>
+          <div class="field">
+            <label>SongSelect CCLI lookup URL</label>
+            <input id="songSelectCcliUrl" value="${esc(s.songSelectCcliUrl||DEFAULT_SONGSELECT_CCLI_URL)}" placeholder="${esc(DEFAULT_SONGSELECT_CCLI_URL)}">
+            <small>Use <code>{ccli}</code> where the CCLI number belongs. Digits-only searches use this URL.</small>
+          </div>
+          <button class="secondary compact" type="button" id="resetSongSelectSearchUrl">Reset URLs</button>
+        </div>
+      </div>
+
+      <div class="extension-config songselect-extension-settings experimental-songselect-settings">
+        <div class="settings-subsection-head">
+          <div>
+            <h4>SongSelect Browser Bridge <span class="experimental-pill">Experimental</span></h4>
+            <p class="meta">Optional automatic import from a signed-in SongSelect browser tab. Off by default.</p>
+          </div>
+          <label class="toggle compact-toggle"><span>Enable</span><input id="songSelectBridgeEnabled" type="checkbox" ${s.songSelectBridgeEnabled===true?'checked':''}></label>
+        </div>
+        <div id="songSelectBridgeSettings" ${s.songSelectBridgeEnabled===true?'':'hidden'}>
+          <div class="songselect-extension-settings-actions">
+            <a class="secondary compact button-link" href="/downloads/songselect-openlp-extension.zip" download>Download Edge/Chrome extension</a>
+          </div>
+          <p class="meta">When enabled, Add Song shows the experimental browser option. Install the extension on each desktop browser that will use automatic SongSelect import.</p>
+          <details class="settings-help-details">
+            <summary>Install and use</summary>
+            <ol>
+              <li>Download and unzip the extension.</li>
+              <li><strong>Edge:</strong> open <code>edge://extensions</code>. <strong>Chrome:</strong> open <code>chrome://extensions</code>.</li>
+              <li>Turn on <strong>Developer mode</strong>, choose <strong>Load unpacked</strong>, and select the unzipped folder containing <code>manifest.json</code>.</li>
+              <li>Open the extension's <strong>Details → Extension options</strong>, enter this Planner's web address, click <strong>Save</strong>, and approve access. The Options page should say <strong>Planner site access: granted ✓</strong>.</li>
+              <li>Save Settings here with the experimental bridge enabled.</li>
+              <li>In SongSelect, open a song's <strong>Lyrics</strong> page and press <strong>Send to OpenLP</strong>.</li>
+            </ol>
+            <p>The extension runs only on SongSelect and this Planner. SongSelect performs its normal download/accounting action; the authorised song is then transferred here for duplicate checking and merge.</p>
+            <p>No CCLI password or SongSelect session cookie is saved by the Planner.</p>
+          </details>
+        </div>
+      </div></div>
 
       <div class="field">
         <label>ChurchSuite</label>
@@ -8349,16 +11243,18 @@ function openSettings(){
       <div class="field churchsuite-plan-base-field" id="churchSuitePlanBaseField">
         <label>ChurchSuite Plan Page address</label>
         <input id="churchSuitePlanBaseUrl" type="url" placeholder="https://yourchurch.churchsuite.com" value="${esc(s.churchSuitePlanBaseUrl||'')}">
-        <p class="meta">Enter this once so the planner can build published Plan Page links automatically. You can still add or edit a ChurchSuite Plan Page URL manually on any individual service.</p>
+        <p class="meta">Used to build ChurchSuite Plan links automatically. A service can still have its own link.</p>
       </div>
 
-      <p class="meta">When ChurchSuite is On, you can sync published plans in bulk or link an individual service by adding/editing its ChurchSuite Plan Page URL manually.</p>
+      <p class="meta">When enabled, sync published plans in bulk or link a service manually.</p>
+
+      <label class="toggle"><span><strong>Import assigned names</strong><small>Allow Planner to read Person / Leader names from ChurchSuite service-plan items.</small></span><input id="churchSuiteImportPeopleEnabled" type="checkbox" ${s.churchSuiteImportPeopleEnabled===true?'checked':''}></label>
 
       <div id="churchSuiteTypesSettings" hidden>
         <div class="settings-subsection-head">
           <div>
             <h4>ChurchSuite service-plan types</h4>
-            <p class="meta">Maintain the ChurchSuite Types your church uses and choose what each becomes in the planner. During each single or batch import, the user chooses Songs only, All configured Types, or Select Types. ChurchSuite Songs are handled separately.</p>
+            <p class="meta">Map ChurchSuite Types to Planner items and choose their default sync behaviour. Songs are handled separately.</p>
           </div>
           <button class="secondary compact" id="addChurchSuiteType" type="button">＋ Add type</button>
         </div>
@@ -8371,7 +11267,7 @@ function openSettings(){
             <h4>ChurchSuite service mapping</h4>
             <p class="meta">Map ChurchSuite plan names to a regular OpenLP Planner service type, or explicitly to One-off services. If there is no saved mapping, the planner first checks whether the ChurchSuite name starts with a full regular service type name — for example <strong>Morning Church with Communion</strong> → <strong>Morning Church</strong>. You can override any suggestion manually.</p>
           </div>
-          <button class="secondary compact" type="button" id="refreshChurchSuiteServiceNames">Refresh from ChurchSuite</button>
+          <div class="settings-inline-actions"><button class="secondary compact" type="button" id="restoreHiddenChurchSuiteServiceNames" hidden>Restore hidden names</button><button class="secondary compact" type="button" id="refreshChurchSuiteServiceNames">Refresh from ChurchSuite</button></div>
         </div>
         <div id="churchSuiteServiceMappingStatus" class="meta"></div>
         <div id="churchSuiteServiceMappingsList" class="churchsuite-service-mappings-list"></div>
@@ -8404,14 +11300,14 @@ function openSettings(){
               <p class="meta">Only published plans from today through this many weeks ahead are listed, if available.</p>
             </div>
             <div class="published-directory-options">
-              <label class="toggle"><span>Show OpenLP Planner status</span><input id="churchSuiteDirectoryShowPlannerStatus" type="checkbox" ${s.churchSuiteDirectoryShowPlannerStatus!==false?'checked':''}></label>
-              <p class="meta">Shows Complete, Not complete, Downloaded or Amended after download when a matching OpenLP Planner service exists. Otherwise the status is blank.</p>
+              <label class="toggle"><span>Show Planner status</span><input id="churchSuiteDirectoryShowPlannerStatus" type="checkbox" ${s.churchSuiteDirectoryShowPlannerStatus!==false?'checked':''}></label>
+              <p class="meta">Shows the matching Planner service status.</p>
 
-              <label class="toggle"><span>Show whether ChurchSuite songs are selected</span><input id="churchSuiteDirectoryShowSongs" type="checkbox" ${s.churchSuiteDirectoryShowSongs!==false?'checked':''}></label>
-              <p class="meta">Re-sync checks the ChurchSuite plan items and shows whether songs have actually been selected in each plan.</p>
+              <label class="toggle"><span>Show song selection</span><input id="churchSuiteDirectoryShowSongs" type="checkbox" ${s.churchSuiteDirectoryShowSongs!==false?'checked':''}></label>
+              <p class="meta">Shows whether each ChurchSuite plan has songs selected.</p>
 
-              <label class="toggle"><span>Show a link to this page on the Services screen</span><input id="churchSuiteDirectoryShowServicesLink" type="checkbox" ${s.churchSuiteDirectoryShowServicesLink?'checked':''}></label>
-              <p class="meta">Adds a ChurchSuite Plans link beside Library in the non-scrolling Services header.</p>
+              <label class="toggle"><span>Show ChurchSuite Plans link</span><input id="churchSuiteDirectoryShowServicesLink" type="checkbox" ${s.churchSuiteDirectoryShowServicesLink?'checked':''}></label>
+              <p class="meta">Adds ChurchSuite Plans to the Services navigation menu.</p>
             </div>
             <div class="published-directory-preview">
               <span>Published page</span>
@@ -8424,11 +11320,12 @@ function openSettings(){
 
 
     <div class="sheet-actions"><button class="primary" id="saveSettings">Done</button></div>`);
+  setSheetCloseAction(()=>returnFromSettings(settingsReturnContext));
 
   const settingsSections=[...body.querySelectorAll(':scope > .settings-section')];
   const settingsPageForHeading=heading=>{
     const value=String(heading||'').trim().toLowerCase();
-    if(value==='openlp song library')return 'songs';
+    if(['openlp song library','song library organisation','song library import / export','song statistics data'].includes(value))return 'songs';
     if(value==='backup & restore')return 'backup';
     if(value==='extensions')return 'extensions';
     if(['service plans','projector transfer instructions','openlp themes/templates','regular service types'].includes(value))return 'services';
@@ -8442,7 +11339,7 @@ function openSettings(){
     body.querySelectorAll('[data-settings-tab]').forEach(button=>button.classList.toggle('active',button.dataset.settingsTab===tab));
   };
   body.querySelectorAll('[data-settings-tab]').forEach(button=>button.onclick=()=>showSettingsTab(button.dataset.settingsTab));
-  showSettingsTab('general');
+  showSettingsTab(initialTab||'general');
 
   $('#editorName').value=currentEditor();
   $('#churchSuiteMode').value=churchSuiteEnabled()?'on':'off';
@@ -8471,6 +11368,7 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
   let draftRegularServiceTypes=regularServiceTypes().map(x=>({...x}));
   let draftDefaultTemplateByServiceType={...(s.defaultTemplateByServiceType||{})};
   let draftChurchSuiteServiceMappings=churchSuiteServiceMappings().map(x=>({...x}));
+  let draftHiddenChurchSuiteServiceNames=[...new Set((s.hiddenChurchSuiteServiceNames||[]).map(x=>String(x||'').trim()).filter(Boolean))];
   let discoveredChurchSuiteServiceNames=[...new Set(draftChurchSuiteServiceMappings.map(x=>x.churchSuiteName))].sort((a,b)=>a.localeCompare(b));
 
   const weekdayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -8518,6 +11416,7 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
         <div class="field"><label>Default OpenLP theme</label><select data-rst-theme="${i}">
           ${availableThemes().map(theme=>`<option value="${esc(theme)}" ${String(t.defaultTheme)===theme?'selected':''}>${esc(theme)}</option>`).join('')}
         </select></div>
+        <div class="field service-type-colour-field"><label>Colour</label><input data-rst-colour="${i}" type="color" value="${esc(t.colour||'#4f6f8f')}" title="Colour used for this service type"></div>
         <div class="field"><label>Default template</label><select data-rst-template="${i}"><option value="">None</option>${serviceTemplates().map(tpl=>`<option value="${esc(tpl.id)}" ${String(draftDefaultTemplateByServiceType[String(t.id)]||'')===String(tpl.id)?'selected':''}>${esc(tpl.name)}</option>`).join('')}</select></div>
         <button type="button" class="media-icon-action danger-quiet rst-delete" data-rst-delete="${i}" title="Remove service type" aria-label="Remove ${esc(t.name)}">×</button>
       </div>`).join(''):'<p class="meta">No regular service types. Every service will be treated as a one-off until one is added.</p>';
@@ -8533,6 +11432,10 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
     });
     list.querySelectorAll('[data-rst-theme]').forEach(el=>el.onchange=()=>{
       draftRegularServiceTypes[Number(el.dataset.rstTheme)].defaultTheme=el.value;
+      markSettingsDirty();
+    });
+    list.querySelectorAll('[data-rst-colour]').forEach(el=>el.oninput=()=>{
+      draftRegularServiceTypes[Number(el.dataset.rstColour)].colour=el.value;
       markSettingsDirty();
     });
     list.querySelectorAll('[data-rst-template]').forEach(el=>el.onchange=()=>{
@@ -8566,10 +11469,13 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
       {id:'one-off',name:'One-off services'},
       ...draftRegularServiceTypes.map(t=>({id:String(t.id),name:String(t.name||'Regular service')}))
     ];
+    const hiddenNames=new Set(draftHiddenChurchSuiteServiceNames.map(x=>x.toLowerCase()));
     const names=[...new Set([
       ...discoveredChurchSuiteServiceNames,
       ...draftChurchSuiteServiceMappings.map(x=>x.churchSuiteName)
-    ].filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    ].filter(Boolean))]
+      .filter(name=>!hiddenNames.has(String(name).toLowerCase()))
+      .sort((a,b)=>a.localeCompare(b));
 
     if(!names.length){
       list.innerHTML='<p class="meta">No ChurchSuite plan names discovered yet. Use Refresh from ChurchSuite after the connection is enabled.</p>';
@@ -8586,6 +11492,8 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
         <select data-cs-service-map="${esc(name)}">
           ${typeOptions.map(t=>`<option value="${esc(t.id)}" ${String(selected)===String(t.id)?'selected':''}>${esc(t.name)}</option>`).join('')}
         </select>
+        ${existing?`<button class="icon-btn danger subtle cs-mapping-delete" type="button" data-cs-service-map-delete="${esc(name)}" title="Remove saved mapping" aria-label="Remove saved mapping for ${esc(name)}">↺</button>`:''}
+        <button class="icon-btn danger subtle cs-mapping-forget" type="button" data-cs-service-map-forget="${esc(name)}" title="Forget this ChurchSuite service name" aria-label="Forget ChurchSuite service name ${esc(name)}">🗑</button>
       </div>`;
     }).join('');
 
@@ -8596,10 +11504,57 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
         const row={churchSuiteName:name,plannerTypeId:select.value};
         if(idx>=0)draftChurchSuiteServiceMappings[idx]=row;
         else draftChurchSuiteServiceMappings.push(row);
+        drawChurchSuiteServiceMappings();
+        markSettingsDirty();
+      });
+    });
+
+    list.querySelectorAll('[data-cs-service-map-forget]').forEach(btn=>{
+      btn.addEventListener('click',async()=>{
+        const name=String(btn.dataset.csServiceMapForget||'');
+        const confirmed=await appConfirm(
+          `Forget “${name}” from the ChurchSuite service-mapping list?\n\nThis only hides this discovered ChurchSuite service name from Settings. It does not delete any ChurchSuite plan, planner service, or regular service type.`,
+          {title:'Forget ChurchSuite service name',confirmText:'Forget name',danger:true}
+        );
+        if(!confirmed)return;
+        draftChurchSuiteServiceMappings=draftChurchSuiteServiceMappings.filter(x=>x.churchSuiteName!==name);
+        if(!draftHiddenChurchSuiteServiceNames.some(x=>x.toLowerCase()===name.toLowerCase()))draftHiddenChurchSuiteServiceNames.push(name);
+        drawChurchSuiteServiceMappings();
+        updateHiddenChurchSuiteNamesControl();
+        markSettingsDirty();
+      });
+    });
+
+    list.querySelectorAll('[data-cs-service-map-delete]').forEach(btn=>{
+      btn.addEventListener('click',async()=>{
+        const name=String(btn.dataset.csServiceMapDelete||'');
+        const confirmed=await appConfirm(
+          `Remove the saved ChurchSuite mapping for “${name}”?\n\nThe ChurchSuite service name will remain available. The planner will go back to its automatic service-type suggestion (or One-off if none matches).`,
+          {title:'Remove ChurchSuite mapping',confirmText:'Remove mapping',danger:true}
+        );
+        if(!confirmed)return;
+        draftChurchSuiteServiceMappings=draftChurchSuiteServiceMappings.filter(x=>x.churchSuiteName!==name);
+        drawChurchSuiteServiceMappings();
         markSettingsDirty();
       });
     });
   };
+
+  const updateHiddenChurchSuiteNamesControl=()=>{
+    const btn=$('#restoreHiddenChurchSuiteServiceNames');
+    if(!btn)return;
+    const count=draftHiddenChurchSuiteServiceNames.length;
+    btn.hidden=!count;
+    btn.textContent=count?`Restore hidden names (${count})`:'Restore hidden names';
+  };
+
+  $('#restoreHiddenChurchSuiteServiceNames')?.addEventListener('click',()=>{
+    draftHiddenChurchSuiteServiceNames=[];
+    drawChurchSuiteServiceMappings();
+    updateHiddenChurchSuiteNamesControl();
+    markSettingsDirty();
+  });
+  updateHiddenChurchSuiteNamesControl();
 
   const saveButtons=()=>[$('#saveSettingsTop'),$('#saveSettings')].filter(Boolean);
 
@@ -8636,7 +11591,17 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
 
     list.querySelectorAll('[data-cs-type-map]').forEach(select=>{
       select.addEventListener('change',()=>{
-        draftChurchSuiteTypes[Number(select.dataset.csTypeMap)].importAs=select.value;
+        const row=draftChurchSuiteTypes[Number(select.dataset.csTypeMap)];
+        row.importAs=select.value;
+        row.keepLocalChanges=defaultKeepLocalForChurchSuiteImport(select.value);
+        drawChurchSuiteTypes();
+        markSettingsDirty();
+      });
+    });
+
+    list.querySelectorAll('[data-cs-type-local-policy]').forEach(select=>{
+      select.addEventListener('change',()=>{
+        draftChurchSuiteTypes[Number(select.dataset.csTypeLocalPolicy)].keepLocalChanges=select.value==='keep';
         markSettingsDirty();
       });
     });
@@ -8664,7 +11629,9 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
     try{
       const result=await apiFetch('/api/churchsuite/service-names');
       discoveredChurchSuiteServiceNames=(result.names||[]).map(String).filter(Boolean);
-      if(status)status.textContent=`Found ${discoveredChurchSuiteServiceNames.length} ChurchSuite service name${discoveredChurchSuiteServiceNames.length===1?'':'s'}.`;
+      const hiddenCount=draftHiddenChurchSuiteServiceNames.filter(hidden=>discoveredChurchSuiteServiceNames.some(name=>name.toLowerCase()===hidden.toLowerCase())).length;
+      if(status)status.textContent=`Found ${discoveredChurchSuiteServiceNames.length} ChurchSuite service name${discoveredChurchSuiteServiceNames.length===1?'':'s'}${hiddenCount?` · ${hiddenCount} hidden`:''}.`;
+      updateHiddenChurchSuiteNamesControl();
       drawChurchSuiteServiceMappings();
     }catch(err){
       if(status)status.textContent=err?.message||'Could not read ChurchSuite service names.';
@@ -8735,7 +11702,7 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
   });
 
   $('#addChurchSuiteType').addEventListener('click',()=>{
-    draftChurchSuiteTypes.push({name:'',importAs:'text'});
+    draftChurchSuiteTypes.push({name:'',importAs:'text',keepLocalChanges:false});
     drawChurchSuiteTypes();
     markSettingsDirty();
     setTimeout(()=>{
@@ -8743,6 +11710,31 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
       inputs[inputs.length-1]?.focus();
     },0);
   });
+
+  const syncSongSelectVisibility=()=>{
+    if($('#songSelectSettings'))$('#songSelectSettings').hidden=!$('#songSelectEnabled')?.checked;
+  };
+  const syncSongSelectBridgeVisibility=()=>{
+    if($('#songSelectBridgeSettings'))$('#songSelectBridgeSettings').hidden=!$('#songSelectBridgeEnabled')?.checked;
+  };
+  $('#songSelectEnabled')?.addEventListener('change',()=>{
+    syncSongSelectVisibility();
+    markSettingsDirty();
+  });
+  $('#songSelectBridgeEnabled')?.addEventListener('change',()=>{
+    syncSongSelectBridgeVisibility();
+    markSettingsDirty();
+  });
+  $('#resetSongSelectSearchUrl')?.addEventListener('click',()=>{
+    if($('#songSelectSearchUrl')){
+      $('#songSelectSearchUrl').value=DEFAULT_SONGSELECT_SEARCH_URL;
+      if($('#songSelectCcliUrl'))$('#songSelectCcliUrl').value=DEFAULT_SONGSELECT_CCLI_URL;
+      markSettingsDirty();
+    }
+  });
+
+  syncSongSelectVisibility();
+  syncSongSelectBridgeVisibility();
 
   syncChurchSuiteVisibility();
   drawChurchSuiteTypes();
@@ -8767,7 +11759,12 @@ $('#exportTransferHelp').value=s.exportTransferHelp||'';
     'churchSuiteDirectoryWeeks',
     'churchSuiteDirectoryShowPlannerStatus',
     'churchSuiteDirectoryShowSongs',
-    'churchSuiteDirectoryShowServicesLink'
+    'churchSuiteDirectoryShowServicesLink',
+    'churchSuiteImportPeopleEnabled',
+    'songSelectEnabled',
+    'songSelectBridgeEnabled',
+    'songSelectSearchUrl',
+    'songSelectCcliUrl'
   ];
   settingsDirtyControlIds.forEach(id=>{
     const el=$('#'+id);
@@ -9116,8 +12113,15 @@ ${err.message||String(err)}`,{title:'Could not verify user access'});
     }
     s.customThemes=[...draftCustomThemes];
     s.churchSuiteTypes=draftChurchSuiteTypes
-      .map(x=>({name:String(x.name||'').trim(),importAs:x.importAs||'text'}))
+      .map(x=>({
+        name:String(x.name||'').trim(),
+        importAs:x.importAs||'text',
+        keepLocalChanges:typeof x.keepLocalChanges==='boolean'
+          ?x.keepLocalChanges
+          :defaultKeepLocalForChurchSuiteImport(x.importAs||'text')
+      }))
       .filter(x=>x.name);
+    s.hiddenChurchSuiteServiceNames=[...new Set(draftHiddenChurchSuiteServiceNames.map(x=>String(x||'').trim()).filter(Boolean))];
     s.churchSuiteServiceMappings=draftChurchSuiteServiceMappings
       .map(x=>({
         churchSuiteName:String(x.churchSuiteName||'').trim(),
@@ -9134,6 +12138,11 @@ ${err.message||String(err)}`,{title:'Could not verify user access'});
     s.churchSuiteDirectoryShowPlannerStatus=!!$('#churchSuiteDirectoryShowPlannerStatus')?.checked;
     s.churchSuiteDirectoryShowSongs=!!$('#churchSuiteDirectoryShowSongs')?.checked;
     s.churchSuiteDirectoryShowServicesLink=!!$('#churchSuiteDirectoryShowServicesLink')?.checked;
+    s.churchSuiteImportPeopleEnabled=!!$('#churchSuiteImportPeopleEnabled')?.checked;
+    s.songSelectEnabled=!!$('#songSelectEnabled')?.checked;
+    s.songSelectBridgeEnabled=!!$('#songSelectBridgeEnabled')?.checked;
+    s.songSelectSearchUrl=normaliseSongSelectSearchUrlSetting($('#songSelectSearchUrl')?.value);
+    s.songSelectCcliUrl=String($('#songSelectCcliUrl')?.value||DEFAULT_SONGSELECT_CCLI_URL).trim()||DEFAULT_SONGSELECT_CCLI_URL;
 
 
     const editorDisplayName=$('#editorName').value.trim()||'Steve';
@@ -9144,7 +12153,8 @@ ${err.message||String(err)}`,{title:'Could not verify user access'});
       id:String(t.id||slugServiceType(t.name||`regular-service-${i+1}`)),
       name:String(t.name||'').trim(),
       weekday:Number(t.weekday),
-      defaultTheme:String(t.defaultTheme||'Default')
+      defaultTheme:String(t.defaultTheme||'Default'),
+      colour:String(t.colour||'#4f6f8f')
     })).filter(t=>t.name);
     const duplicateNames=cleanedRegularTypes.some((t,i,a)=>a.findIndex(x=>x.name.toLowerCase()===t.name.toLowerCase())!==i);
     if(duplicateNames){appAlert('Regular service type names must be unique.');return;}
@@ -9180,20 +12190,39 @@ ${err.message||String(err)}`,{title:'Could not verify user access'});
       }
     }
 
-    sheet.close();
-    render();
-
-    if(churchSuiteEnabled()){
-      openServicesPage();
-    }
+    returnFromSettings(settingsReturnContext);
   };
 
   $('#saveSettings').onclick=saveSettingsChanges;
   if($('#saveSettingsTop'))$('#saveSettingsTop').onclick=saveSettingsChanges;
 }
 
-$('#themeBtn').onclick=()=>openThemeEditor();
-body.addEventListener('click',e=>{if(e.target.id==='themeSave'){state.theme=$('#themeSelect').value;$('#themeBtn').textContent=state.theme;persistPlanner();sheet.close()}});
+{
+  const theme=$('#themeBtn');
+  let themeArmed=false,themeTimer=null;
+  const disarmTheme=()=>{
+    themeArmed=false;
+    theme.classList.remove('tap-armed','show-label');
+    theme.blur?.();
+  };
+  theme.onclick=e=>{
+    e.preventDefault();
+    e.stopPropagation();
+    if(!themeArmed){
+      themeArmed=true;
+      theme.classList.add('tap-armed');
+      const name=currentService()?.theme||state.theme||'Default';
+      flashTransientLabel(theme,`Theme: ${name} · tap again to change`,3500);
+      clearTimeout(themeTimer);
+      themeTimer=setTimeout(disarmTheme,3500);
+      return;
+    }
+    clearTimeout(themeTimer);
+    disarmTheme();
+    openThemeEditor();
+  };
+}
+body.addEventListener('click',e=>{if(e.target.id==='themeSave'){state.theme=$('#themeSelect').value;persistPlanner();renderHeader();sheet.close()}});
 
 function openThemeEditor(){
   const themes=['Default','KSSS (am) white','KSSS (am)',...(state.settings.customThemes||[])];
@@ -9212,7 +12241,6 @@ function openThemeEditor(){
 
   $('#themeSave').onclick=()=>{
     state.theme=$('#themeSelect').value;
-    $('#themeBtn').textContent=state.theme;
     persistPlanner();
     saveServiceMeta();
     markServiceEdited('changed theme');
@@ -9325,6 +12353,7 @@ function safeExportFilename(service){
 }
 
 $('#exportBtn').onclick=()=>openExportOpenLP();
+if($('#plannerExportBtn'))$('#plannerExportBtn').onclick=()=>{closeAppMenus();openExportOpenLP();};
 
 $('#clearProjectorMarkBtn').onclick=()=>{
   const s=currentService();
@@ -9361,31 +12390,25 @@ async function openExportOpenLP(){
         ? `<div class="projector-state ready"><strong>Current projector copy is marked</strong><span>You can still download another copy without changing that mark.</span></div>`
         : ''}
 
-    ${check.errors?.length?`<div class="warning-card"><strong>Not ready for a complete export</strong>${check.errors.map(x=>`<p>${esc(x)}</p>`).join('')}</div>`:''}
+    ${check.errors?.length?`<div class="warning-card unfinished-export-warning"><strong>Unfinished service</strong><p>The service is not yet complete. You can still export it; missing or unsupported projected items listed below will be omitted.</p>${check.errors.map(x=>`<p>${esc(x)}</p>`).join('')}</div>`:''}
     ${check.warnings?.length?`<div class="export-warnings">${check.warnings.map(x=>`<div>• ${esc(x)}</div>`).join('')}</div>`:''}
 
     <div class="transfer-card">
       <strong>Getting the service onto the projector laptop</strong>
       <p class="transfer-help-text">${renderHelpMarkdown(state.settings.exportTransferHelp||'')}</p>
+      <p class="meta transfer-ios-note"><strong>iPhone / iPad:</strong> download the .osz file, then use the iOS Share sheet on the downloaded file to send it with LocalSend.</p>
       <a class="text-action" href="https://localsend.org" target="_blank" rel="noopener">Open LocalSend ↗</a>
     </div>
 
     <div class="sheet-actions export-actions export-footer-controls">
-      <div class="export-footer-note">
+      <div class="export-footer-mark-row">
         <label class="export-footer-checkbox">
           <input type="checkbox" id="markDownloadedOnExport" checked>
           <span>Mark service as downloaded</span>
         </label>
-        ${check.errors?.length
-          ? `<small>Incomplete export omits the listed missing/unsupported projected items and leaves the rest of the service intact.</small>`
-          : ''}
       </div>
-      <div class="export-footer-buttons">
-        <button class="primary" id="exportProjectorBtn" ${check.errors?.length?'disabled':''}>Download</button>
-        <button class="secondary" id="shareProjectorBtn" ${check.errors?.length?'disabled':''}>Share / Send</button>
-        ${check.errors?.length && check.canExportIncomplete ? `
-          <button class="primary" id="exportIncompleteProjectorBtn">Download Unfinished Service</button>
-          <button class="secondary" id="shareIncompleteProjectorBtn">Share / Send Unfinished</button>` : ''}
+      <div class="export-footer-download-row">
+        <button class="primary" id="exportProjectorBtn" ${check.errors?.length&&!check.canExportIncomplete?'disabled':''}>Download</button>
       </div>
     </div>`);
 
@@ -9414,54 +12437,6 @@ async function openExportOpenLP(){
       persistPlanner();
     };
 
-    if(mode==='share'){
-      const button=allowIncomplete?$('#shareIncompleteProjectorBtn'):$('#shareProjectorBtn');
-      const original=button?.textContent||'Share / Send';
-      if(button){button.disabled=true;button.textContent='Preparing…';}
-      try{
-        // Fetch only after the explicit button gesture, then hand the completed
-        // OpenLP service file to the operating system's native Share Sheet.
-        const response=await fetch(url,{credentials:'same-origin',cache:'no-store'});
-        if(!response.ok){
-          const message=await response.text().catch(()=>'');
-          throw new Error(message||`Export failed (${response.status})`);
-        }
-        const blob=await response.blob();
-        // Use opaque binary: .osz is ZIP-structured internally, but telling iOS
-        // it is application/zip encourages Files/share targets to treat it as
-        // a generic archive.
-        const file=new File([blob],filename,{type:'application/octet-stream'});
-        const shareData={files:[file]};
-        const canShareFiles=typeof navigator.share==='function'
-          && typeof navigator.canShare==='function'
-          && navigator.canShare(shareData);
-
-        if(!canShareFiles){
-          // Graceful fallback on browsers that cannot share arbitrary files.
-          downloadUrl(url,filename);
-          recordExport();
-          sheet.close();
-          render();
-          appAlert('This browser cannot share the OpenLP file directly, so it has been downloaded instead.');
-          return;
-        }
-
-        await navigator.share(shareData);
-        recordExport();
-        sheet.close();
-        render();
-      }catch(err){
-        // Cancelling the iOS Share Sheet is not an export and should not mark
-        // the service as downloaded.
-        if(err?.name==='AbortError'){
-          if(button){button.disabled=false;button.textContent=original;}
-          return;
-        }
-        if(button){button.disabled=false;button.textContent=original;}
-        appAlert(`Could not share the OpenLP service.\n\n${err.message||String(err)}`);
-      }
-      return;
-    }
 
     recordExport();
     downloadUrl(url,filename);
@@ -9469,15 +12444,15 @@ async function openExportOpenLP(){
     render();
   }
 
-  $('#exportProjectorBtn').onclick=()=>performExport(!!$('#markDownloadedOnExport')?.checked,false,'download');
-  $('#shareProjectorBtn').onclick=()=>performExport(!!$('#markDownloadedOnExport')?.checked,false,'share');
-  if($('#exportIncompleteProjectorBtn')) $('#exportIncompleteProjectorBtn').onclick=()=>performExport(!!$('#markDownloadedOnExport')?.checked,true,'download');
-  if($('#shareIncompleteProjectorBtn')) $('#shareIncompleteProjectorBtn').onclick=()=>performExport(!!$('#markDownloadedOnExport')?.checked,true,'share');
+  $('#exportProjectorBtn').onclick=()=>performExport(!!$('#markDownloadedOnExport')?.checked,!!(check.errors?.length&&check.canExportIncomplete),'download');
 }
 
-$('#servicesBtn').onclick=()=>openServiceSwitcher();
+if($('#servicesBtn'))$('#servicesBtn').onclick=()=>openServiceSwitcher();
+if($('#plannerServiceListBtn'))$('#plannerServiceListBtn').onclick=()=>{closeAppMenus();openServicesPage();};
+if($('#plannerHomeBtn'))$('#plannerHomeBtn').onclick=()=>{closeAppMenus();openDashboard();};
 $('#servicesAddBtn').onclick=openAddServiceFromServicesPage;
 $('#servicesDeleteSelectedBtn').onclick=confirmDeleteSelectedServices;
+if($('#servicesHomeBtn'))$('#servicesHomeBtn').onclick=openDashboard;
 $('#servicesCloseBtn').onclick=closeServicesPage;
 $('#servicesSyncChurchSuiteBtn').onclick=openChurchSuiteAutoSyncPreview;
 $('#libraryBtn').onclick=()=>openLibraryHub();
@@ -9704,22 +12679,38 @@ async function openSongStatistics(initial={mode:'all',from:'',to:'',serviceTypes
 
 function openLibraryHub(){
   openSheet(`<h2>Library</h2>
-    <div class="library-hub-grid">
-      <button class="library-card" id="librarySongs"><strong>Song library</strong><span>${songs.length} shared songs</span></button>
-      <button class="library-card" id="libraryVideos"><strong>Video library</strong><span>Stored + service-specific files</span></button>
-      <button class="library-card" id="libraryImages"><strong>Image library</strong><span>Stored + service-specific files</span></button>
-      <button class="library-card" id="libraryPdfs"><strong>PDF library</strong><span>Stored + service-specific presentations</span></button>
-      <button class="library-card" id="libraryTemplates"><strong>Service Templates</strong><span>${serviceTemplates().length} saved template${serviceTemplates().length===1?'':'s'} · edit order and sync behaviour</span></button>
-      <button class="library-card" id="librarySongStats"><strong>Song statistics</strong><span>Usage recorded when a service is downloaded or shared</span></button>
-    </div>
-    <p class="meta">Files stored in the OpenLP Planner library survive service deletion. Service-specific files belong only to their service.</p>`);
+    <div class="library-hub-groups">
+      <section class="library-hub-group library-hub-primary">
+        <h3>Songs</h3>
+        <div class="library-hub-grid">
+          <button class="library-card library-card-major" id="librarySongs"><strong>Song library</strong><span>${songs.length} shared songs</span></button>
+          <button class="library-card" id="librarySongStats"><strong>Song statistics</strong><span>Usage and service history</span></button>
+        </div>
+      </section>
+      <section class="library-hub-group">
+        <h3>Service components</h3>
+        <div class="library-hub-grid">
+          <button class="library-card" id="libraryImages"><strong>Image library</strong><span>Notices and general image presentations</span></button>
+          <button class="library-card" id="librarySermonImages"><strong>Sermon Images library</strong><span>Images used by Sermon Images items</span></button>
+          <button class="library-card" id="libraryVideos"><strong>Video library</strong><span>Stored and service-specific video</span></button>
+          <button class="library-card library-card-minor" id="libraryPdfs"><strong>PDF library</strong><span>Stored PDF presentations</span></button>
+        </div>
+      </section>
+      <section class="library-hub-group library-hub-templates">
+        <h3>Planning</h3>
+        <div class="library-hub-grid single-card-grid">
+          <button class="library-card" id="libraryTemplates"><strong>Service Templates</strong><span>${serviceTemplates().length} saved template${serviceTemplates().length===1?'':'s'} · order and sync behaviour</span></button>
+        </div>
+      </section>
+    </div>`);
   setSheetCloseAction(closeSheetSafely);
   $('#librarySongs').onclick=openSongLibrary;
+  $('#librarySongStats').onclick=openSongStatistics;
   $('#libraryVideos').onclick=()=>openMediaLibrary('video');
-  $('#libraryImages').onclick=()=>openMediaLibrary('images');
+  $('#libraryImages').onclick=()=>openMediaLibrary('images',{category:'general'});
+  $('#librarySermonImages').onclick=()=>openMediaLibrary('images',{category:'sermon'});
   $('#libraryPdfs').onclick=()=>openMediaLibrary('pdf');
   $('#libraryTemplates').onclick=()=>openServiceTemplateManager('library');
-  $('#librarySongStats').onclick=openSongStatistics;
 }
 
 function retainedMediaGroups(type,assets){
@@ -9871,22 +12862,30 @@ function mediaLibraryFolderOpen(type,key,defaultOpen=false){
   if(!view)return defaultOpen;
   return view.openFolders.includes(String(key));
 }
-function refreshMediaLibrary(type){
+function refreshMediaLibrary(type,category='all'){
   captureMediaLibraryView(type);
-  return openMediaLibrary(type,{preserveView:true});
+  return openMediaLibrary(type,{preserveView:true,category});
 }
 
-async function openMediaLibrary(type,{preserveView=false}={}){
+async function openMediaLibrary(type,{preserveView=false,category='all'}={}){
   const label=mediaTypeLabel(type);
-  if(!preserveView)mediaLibraryViewState.delete(String(type));
-  openSheet(`<h2>${label} library</h2><p class="meta">Loading OpenLP Planner library…</p>`);
+  const requestedLabel=type==='images'&&category==='sermon'?'Sermon Images':label;
+  if(!preserveView)mediaLibraryViewState.delete(`${String(type)}:${category}`);
+  openSheet(`<h2>${requestedLabel} library</h2><p class="meta">Loading OpenLP Planner library…</p>`);
   try{
     const [data,folderRows]=await Promise.all([
       loadPlannerMediaLibrary(type),
       loadPlannerMediaFolders(type)
     ]);
-    const retained=retainedMediaGroups(type,data.retained||[]);
-    const serviceFolders=serviceMediaFolders(data.serviceSpecific||[]);
+    let retained=retainedMediaGroups(type,data.retained||[]);
+    let serviceFolders=serviceMediaFolders(data.serviceSpecific||[]);
+    if(type==='images'&&category!=='all'){
+      const folderNameById=new Map(folderRows.map(f=>[String(f.id),String(f.name||'')]));
+      const isSermonEntry=entry=>(entry.usages||[]).some(u=>String(u.itemType||'')==='sermon-images') || entry.assets.some(a=>folderNameById.get(String(a.libraryFolderId||''))==='Sermon Images');
+      retained=retained.filter(entry=>category==='sermon'?isSermonEntry(entry):!isSermonEntry(entry));
+      serviceFolders=serviceFolders.map(folder=>({...folder,items:(folder.items||[]).filter(item=>category==='sermon'?item.itemType==='sermon-images':item.itemType!=='sermon-images')})).filter(folder=>folder.items.length);
+    }
+    const libraryLabel=type==='images'&&category==='sermon'?'Sermon Images':label;
 
     const folderMap=new Map(folderRows.map(f=>[String(f.id),{...f,entries:[]}]));
     const unfiled={id:'',name:'Unfiled',mediaType:type,entries:[]};
@@ -9933,7 +12932,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
       }
     }
 
-    openSheet(`<h2>${label} library</h2>
+    openSheet(`<h2>${libraryLabel} library</h2>
       <section class="media-library-section">
         <div class="media-library-section-title">
           <div><h3>OpenLP Planner library</h3><span>Retained for future services</span></div>
@@ -10020,7 +13019,17 @@ async function openMediaLibrary(type,{preserveView=false}={}){
 
     $('#backLibraryHub').onclick=openLibraryHub;
     setSheetCloseAction(openLibraryHub);
-    $('#addDirectLibraryMedia').onclick=()=>{captureMediaLibraryView(type);openDirectMediaLibraryUpload(type,()=>refreshMediaLibrary(type));};
+    $('#addDirectLibraryMedia').onclick=async()=>{
+      captureMediaLibraryView(type);
+      if(type==='images'&&category==='sermon'){
+        try{
+          const folder=await ensurePlannerMediaFolder('images','Sermon Images','');
+          openDirectMediaLibraryUpload(type,()=>refreshMediaLibrary(type,category),{lockedFolderId:folder?.id||'',lockedFolderName:'Sermon Images'});
+        }catch(err){appAlert(err.message||String(err));}
+        return;
+      }
+      openDirectMediaLibraryUpload(type,()=>refreshMediaLibrary(type,category));
+    };
 
     const updateBulkMove=()=>{
       const btn=$('#moveSelectedLibraryMedia');
@@ -10039,7 +13048,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
       const ids=[...indexes].flatMap(i=>allEntries[Number(i)]?.assets?.map(a=>a.id)||[]);
       if(!ids.length)return;
       await movePlannerLibraryAssets(ids,folderId);
-      refreshMediaLibrary(type);
+      refreshMediaLibrary(type,category);
     };
 
     $('#moveSelectedLibraryMedia').onclick=()=>{
@@ -10051,12 +13060,12 @@ async function openMediaLibrary(type,{preserveView=false}={}){
           ${folderRows.map(f=>`<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('')}
         </select></div>
         <div class="sheet-actions"><button class="secondary" id="cancelBulkMoveMedia">Cancel</button><button class="primary" id="confirmBulkMoveMedia">Move selected</button></div>`);
-      $('#cancelBulkMoveMedia').onclick=()=>refreshMediaLibrary(type);
+      $('#cancelBulkMoveMedia').onclick=()=>refreshMediaLibrary(type,category);
       $('#confirmBulkMoveMedia').onclick=async()=>{
         const btn=$('#confirmBulkMoveMedia');
         btn.disabled=true;btn.textContent='Moving…';
         try{await moveEntriesToFolder(selectedEntries,$('#bulkMoveMediaFolder').value||'')}
-        catch(err){appAlert(err.message||String(err));refreshMediaLibrary(type)}
+        catch(err){appAlert(err.message||String(err));refreshMediaLibrary(type,category)}
       };
     };
 
@@ -10067,7 +13076,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
       btn.disabled=true;
       const old=btn.textContent;
       btn.textContent='Loading…';
-      setTimeout(()=>openDirectMediaLibraryUpload(type,()=>refreshMediaLibrary(type),{lockedFolderId:folderId,lockedFolderName:folderName}),60);
+      setTimeout(()=>openDirectMediaLibraryUpload(type,()=>refreshMediaLibrary(type,category),{lockedFolderId:folderId,lockedFolderName:folderName}),60);
     });
 
     // Desktop drag/drop: dragging one unselected row moves just it; dragging a
@@ -10100,12 +13109,12 @@ async function openMediaLibrary(type,{preserveView=false}={}){
 
     body.querySelectorAll('[data-view-library-entry]').forEach(btn=>btn.onclick=()=>{
       const entry=allEntries[Number(btn.dataset.viewLibraryEntry)];
-      if(entry){captureMediaLibraryView(type);openMediaFullPreview(type,entry.title,entry.assets,()=>refreshMediaLibrary(type));}
+      if(entry){captureMediaLibraryView(type);openMediaFullPreview(type,entry.title,entry.assets,()=>refreshMediaLibrary(type,category));}
     });
 
     body.querySelectorAll('[data-view-service-media]').forEach(btn=>btn.onclick=()=>{
       const asset=(data.serviceSpecific||[]).find(a=>String(a.id)===String(btn.dataset.viewServiceMedia));
-      if(asset){captureMediaLibraryView(type);openMediaFullPreview(type,btn.dataset.viewServiceName||asset.originalName,[asset],()=>refreshMediaLibrary(type));}
+      if(asset){captureMediaLibraryView(type);openMediaFullPreview(type,btn.dataset.viewServiceName||asset.originalName,[asset],()=>refreshMediaLibrary(type,category));}
     });
 
     body.querySelectorAll('[data-download-library-entry]').forEach(btn=>btn.onclick=()=>{
@@ -10121,7 +13130,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
       openSheet(`<h2>Rename file</h2><div class="field"><label>File name</label><input id="renameLibraryFileName" value="${esc(current)}"></div>
         <p class="meta" id="renameLibraryStatus"></p>
         <div class="sheet-actions"><button class="secondary" id="cancelRenameLibraryFile">Back</button><button class="secondary" id="saveRenameLibraryFile">Save</button><button class="primary" id="confirmRenameLibraryFile">Done</button></div>`);
-      $('#cancelRenameLibraryFile').onclick=()=>refreshMediaLibrary(type);
+      $('#cancelRenameLibraryFile').onclick=()=>refreshMediaLibrary(type,category);
       const doRename=async(stay)=>{
         const name=$('#renameLibraryFileName').value.trim();
         if(!name)return;
@@ -10131,7 +13140,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
           entry.title=name;
           if(entry.assets[0])entry.assets[0].originalName=name;
           if(stay){status.textContent='Saved ✓';$('#renameLibraryFileName').focus();}
-          else refreshMediaLibrary(type);
+          else refreshMediaLibrary(type,category);
         }catch(err){status.textContent=`Not saved: ${err.message||String(err)}`}
       };
       $('#saveRenameLibraryFile').onclick=()=>doRename(true);
@@ -10144,7 +13153,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
       openSheet(`<h2>Rename file</h2><div class="field"><label>File name</label><input id="renameServiceMediaName" value="${esc(current)}"></div>
         <p class="meta" id="renameServiceMediaStatus"></p>
         <div class="sheet-actions"><button class="secondary" id="cancelRenameServiceMedia">Back</button><button class="secondary" id="saveRenameServiceMedia">Save</button><button class="primary" id="confirmRenameServiceMedia">Done</button></div>`);
-      $('#cancelRenameServiceMedia').onclick=()=>refreshMediaLibrary(type);
+      $('#cancelRenameServiceMedia').onclick=()=>refreshMediaLibrary(type,category);
       const doServiceRename=async(stay)=>{
         const name=$('#renameServiceMediaName').value.trim();
         if(!name)return;
@@ -10152,7 +13161,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
         try{
           await renamePlannerMediaAsset(id,name);
           if(stay){status.textContent='Saved ✓';$('#renameServiceMediaName').focus();}
-          else refreshMediaLibrary(type);
+          else refreshMediaLibrary(type,category);
         }catch(err){status.textContent=`Not saved: ${err.message||String(err)}`}
       };
       $('#saveRenameServiceMedia').onclick=()=>doServiceRename(true);
@@ -10163,13 +13172,13 @@ async function openMediaLibrary(type,{preserveView=false}={}){
       openSheet(`<h2>Create ${label.toLowerCase()} folder</h2>
         <div class="field"><label>Folder name</label><input id="newMediaFolderName" placeholder="e.g. Notices"></div>
         <div class="sheet-actions"><button class="secondary" id="cancelCreateMediaFolder">Cancel</button><button class="primary" id="confirmCreateMediaFolder">Create folder</button></div>`);
-      $('#cancelCreateMediaFolder').onclick=()=>refreshMediaLibrary(type);
+      $('#cancelCreateMediaFolder').onclick=()=>refreshMediaLibrary(type,category);
       $('#confirmCreateMediaFolder').onclick=async()=>{
         const name=$('#newMediaFolderName').value.trim();
         if(!name)return;
         try{
           await createPlannerMediaFolder(type,name);
-          refreshMediaLibrary(type);
+          refreshMediaLibrary(type,category);
         }catch(err){appAlert(err.message||String(err))}
       };
     };
@@ -10182,7 +13191,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
         <div class="field"><label>Folder name</label><input id="renameMediaFolderName" value="${esc(oldName)}"></div>
         <p class="meta" id="renameMediaFolderStatus"></p>
         <div class="sheet-actions"><button class="secondary" id="cancelRenameMediaFolder">Back</button><button class="secondary" id="saveRenameMediaFolder">Save</button><button class="primary" id="confirmRenameMediaFolder">Done</button></div>`);
-      $('#cancelRenameMediaFolder').onclick=()=>refreshMediaLibrary(type);
+      $('#cancelRenameMediaFolder').onclick=()=>refreshMediaLibrary(type,category);
       const doFolderRename=async(stay)=>{
         const name=$('#renameMediaFolderName').value.trim();
         if(!name)return;
@@ -10190,7 +13199,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
         try{
           await renamePlannerMediaFolder(id,name);
           if(stay){status.textContent='Saved ✓';$('#renameMediaFolderName').focus();}
-          else refreshMediaLibrary(type);
+          else refreshMediaLibrary(type,category);
         }catch(err){status.textContent=`Not saved: ${err.message||String(err)}`}
       };
       $('#saveRenameMediaFolder').onclick=()=>doFolderRename(true);
@@ -10201,7 +13210,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
       e.preventDefault();e.stopPropagation();
       if(btn.disabled)return;
       if(!(await appConfirm('Delete this empty folder?',{title:'Delete folder',confirmLabel:'Delete',danger:true})))return;
-      try{await deletePlannerMediaFolder(btn.dataset.deleteFolder);refreshMediaLibrary(type)}
+      try{await deletePlannerMediaFolder(btn.dataset.deleteFolder);refreshMediaLibrary(type,category)}
       catch(err){appAlert(err.message||String(err))}
     });
 
@@ -10217,12 +13226,12 @@ async function openMediaLibrary(type,{preserveView=false}={}){
           </select>
         </div>
         <div class="sheet-actions"><button class="secondary" id="cancelMoveMedia">Cancel</button><button class="primary" id="confirmMoveMedia">Move</button></div>`);
-      $('#cancelMoveMedia').onclick=()=>refreshMediaLibrary(type);
+      $('#cancelMoveMedia').onclick=()=>refreshMediaLibrary(type,category);
       $('#confirmMoveMedia').onclick=async()=>{
         const folderId=$('#moveMediaFolder').value;
         try{
           await movePlannerLibraryAssets(entry.assets.map(a=>a.id),folderId);
-          refreshMediaLibrary(type);
+          refreshMediaLibrary(type,category);
         }catch(err){appAlert(err.message||String(err))}
       };
     });
@@ -10237,7 +13246,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
         const baseName=item?.title||'Stored media';
         const folder=await ensurePlannerMediaFolder(type,baseName,service?.dateISO||asset?.serviceDate||'');
         await retainServiceMedia(assetId,type,'',folder?.id||'');
-        refreshMediaLibrary(type);
+        refreshMediaLibrary(type,category);
       }catch(err){
         appAlert(err.message||String(err));btn.disabled=false;btn.textContent='Store in library'
       }
@@ -10250,7 +13259,7 @@ async function openMediaLibrary(type,{preserveView=false}={}){
       btn.disabled=true;
       try{
         for(const a of entry.assets)await deleteMediaAsset(a.id);
-        refreshMediaLibrary(type);
+        refreshMediaLibrary(type,category);
       }catch(err){appAlert(err.message||String(err));btn.disabled=false}
     });
   }catch(err){
@@ -10279,12 +13288,79 @@ $('#runPrint').onclick=()=>window.print();
 setCurrentEditor(currentEditor());
 render();
 initFloatingAdd();
-bootstrapRemote();
 
-setTimeout(()=>{
-  if(!currentService() || lastScreen()==='services'){
+async function initialisePlannerView(){
+  await bootstrapRemote();
+  const dashboardAllowed=dashboardAccessAllowed();
+  const requestedScreen=new URLSearchParams(location.search).get('screen');
+  if($('#dashboardBtn'))$('#dashboardBtn').hidden=!dashboardAllowed;
+  if($('#servicesDashboardBtn'))$('#servicesDashboardBtn').hidden=!dashboardAllowed;
+
+  // Home is the default landing screen for Planner/Admin users.
+  // Explicit screen deep-links can still open another context deliberately.
+  if(dashboardAccessAllowed() && (!requestedScreen || requestedScreen==='home')){
+    if(requestedScreen==='home'){
+      try{history.replaceState(null,'',location.pathname);}catch(_){}
+    }
+    await openDashboard();
+  }else if(requestedScreen==='services'){
+    if(remoteAvailable)await refreshSharedPlannerState();
+    openLPOnlyView=false;
+    document.body.classList.remove('openlp-only-view');
+    rememberLastScreen('services');
+    document.querySelector('main.shell').hidden=true;
+    $('#dashboardPage').hidden=true;
+    $('#servicesPage').hidden=false;
+    $('#plannerHeaderNav').hidden=true;
+    $('#dashboardHeaderNav').hidden=true;
+    $('#servicesHeaderNav').hidden=false;
+    $('#plannerFooter').hidden=true;
+    $('#servicesFooter').hidden=false;
+    document.body.classList.remove('dashboard-page-open');
+    document.body.classList.add('services-page-open');
+    renderServicesPage();
+  }else if(requestedScreen==='planner' && currentService()){
+    rememberLastScreen('planner');
+    render();
+  }else if(!currentService()){
+    if(remoteAvailable)await refreshSharedPlannerState();
     openServicesPage();
   }else{
     rememberLastScreen('planner');
+    render();
   }
-},180);
+}
+
+void initialisePlannerView()
+  .catch(err=>{
+    console.error('Planner startup failed',err);
+    throw err;
+  })
+  .finally(()=>{
+    document.documentElement.classList.remove('app-booting');
+    document.getElementById('bootHideStyle')?.remove();
+  });
+
+// iOS/Safari can restore the whole web app from its back-forward cache after a
+// login/navigation. The DOM and JavaScript heap then contain the old service
+// list even though the server has newer data. Refresh shared state on restore.
+window.addEventListener('pageshow',async event=>{
+  if(!event.persisted || !remoteAvailable)return;
+  document.documentElement.classList.add('app-booting');
+  try{
+    const refreshed=await refreshSharedPlannerState();
+    if(!refreshed)return;
+    if(document.body.classList.contains('dashboard-page-open') || lastScreen()==='dashboard'){
+      renderDashboard();
+    }else if(document.body.classList.contains('services-page-open') || lastScreen()==='services'){
+      renderServicesPage();
+    }else{
+      render();
+    }
+  }finally{
+    document.documentElement.classList.remove('app-booting');
+  }
+});
+
+setupAppMenus();
+document.addEventListener('click',e=>{if(!e.target.closest('.app-menu'))closeAppMenus();});

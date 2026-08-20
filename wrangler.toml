@@ -10,11 +10,9 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "openlp-service-planner"
-database_id = "607e3f14-9fa8-411b-9603-fe990cf0cf70"
+database_id = "00000000-0000-0000-0000-000000000000" # replace before deployment
 migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "MEDIA"
-bucket_name = "openlp-service-planner-media"
-
-
+bucket_name = "REPLACE_WITH_YOUR_R2_BUCKET_NAME"

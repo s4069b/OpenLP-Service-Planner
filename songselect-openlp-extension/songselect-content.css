@@ -1,0 +1,31 @@
+#openlp-songselect-send-button{
+  position:fixed;
+  right:18px;
+  bottom:18px;
+  z-index:2147483647;
+  appearance:none;
+  border:1px solid #334a5f;
+  border-radius:10px;
+  padding:10px 14px;
+  background:#edf3f7;
+  color:#20384c;
+  font:600 14px/1.1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  box-shadow:0 5px 18px rgba(0,0,0,.18);
+  cursor:pointer
+}
+#openlp-songselect-send-button:hover{background:#e2edf4}
+#openlp-songselect-send-button:disabled{opacity:.65;cursor:wait}
+.openlp-songselect-error{
+  position:fixed;
+  right:18px;
+  bottom:68px;
+  z-index:2147483647;
+  max-width:320px;
+  padding:8px 10px;
+  border-radius:8px;
+  background:#fff2ef;
+  color:#7b2d22;
+  border:1px solid #d9a198;
+  font:12px/1.35 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  box-shadow:0 4px 14px rgba(0,0,0,.15)
+}

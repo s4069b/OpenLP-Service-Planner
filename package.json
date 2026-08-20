@@ -1,6 +1,6 @@
 {
   "name": "openlp-service-planner",
-  "version": "1.76.40",
+  "version": "1.80.0",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
@@ -23,7 +23,8 @@
     "postinstall": "npm run vendor:pdfjs",
     "check:browser": "node --check public/app.js && npm run check:quality",
     "test:migrations": "node server/migration-test.mjs",
-    "check:quality": "node scripts/project-quality-check.mjs"
+    "check:quality": "node scripts/project-quality-check.mjs",
+    "check:project": "npm run check:browser"
   },
   "devDependencies": {
     "typescript": "5.9.3",

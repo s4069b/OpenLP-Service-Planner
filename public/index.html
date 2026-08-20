@@ -1,17 +1,18 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="app-booting">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#f7f7f4" />
   <title>OpenLP Service Planner</title>
-  <link rel="stylesheet" href="app.css?v=17637" />
+  <link rel="stylesheet" href="app.css?v=1800" />
 
   <link rel="icon" href="/favicon.ico?v=17629" sizes="any">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=17629">
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=17629">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=17629">
   <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png?v=17629">
+  <style id="bootHideStyle">html.app-booting body{visibility:hidden!important}</style>
 </head>
 <body>
   <header class="topbar" id="appHeader">
@@ -19,45 +20,54 @@
       <span class="brandmark">O</span><span>OpenLP Service Planner</span>
     </a>
 
-    <nav class="screen-nav planner-header-nav" id="plannerHeaderNav" aria-label="Service Planner navigation">
-      <button class="secondary compact" id="servicesBtn">Services</button>
-      <button class="secondary compact" id="libraryBtn">Library</button>
-      <button class="secondary compact" id="runSheetBtn">Run Sheet</button>
-      <span class="planner-export-stack">
-        <button class="primary compact" id="exportBtn">Export OpenLP</button>
-        <button class="planner-clear-download" id="clearProjectorMarkBtn" type="button" hidden>Clear download mark</button>
-      </span>
-    </nav>
-
-    <nav class="screen-nav services-header-nav" id="servicesHeaderNav" aria-label="Services navigation" hidden>
-      <button class="secondary compact" id="servicesLibraryBtn">Library</button>
-      <a class="secondary compact" id="servicesPublishedPlansBtn" href="/churchsuite-plans" target="_blank" rel="noopener" hidden>ChurchSuite Plans ↗</a>
-      <button class="secondary compact back-last-service" id="servicesCloseBtn">Back to last service</button>
-    </nav>
+    <div class="top-context" id="plannerContextLabel">Service Planner</div>
 
     <div class="top-actions">
       <div class="top-status" id="topStatus" aria-live="polite">
         <div class="last-edited" id="lastEdited">No edits recorded yet</div>
         <div class="projector-status-note" id="projectorStatusNote" hidden></div>
       </div>
-      <button class="ghost" id="activityBtn">Activity</button>
-      <button class="ghost" id="settingsBtn">Settings</button>
-      <button class="avatar" title="Current editor">SB</button>
+      <button class="ghost icon-control" id="activityBtn" title="Activity" aria-label="Activity"><span aria-hidden="true">◷</span></button>
+      <div class="app-menu" id="headerMenuWrap">
+        <button class="ghost icon-control menu-trigger" id="headerMenuBtn" type="button" aria-expanded="false" aria-controls="headerMenu" title="Navigation" aria-label="Navigation menu">☰</button>
+        <div class="app-menu-panel header-menu-panel" id="headerMenu" hidden>
+          <div id="plannerHeaderNav" class="menu-section" aria-label="Service Planner navigation">
+            <button class="menu-action menu-action-strong home-menu-item" id="dashboardBtn">Home</button>
+            <button class="menu-action" id="servicesBtn">Services</button>
+            <button class="menu-action" id="libraryBtn">Library</button>
+            <button class="menu-action" id="runSheetBtn">Run Sheet</button>
+            <button class="menu-action menu-action-primary" id="exportBtn">Export OpenLP</button>
+            <button class="menu-action subtle-action" id="clearProjectorMarkBtn" type="button" hidden>Clear download mark</button>
+          </div>
+          <div id="servicesHeaderNav" class="menu-section" aria-label="Services navigation" hidden>
+            <button class="menu-action menu-action-strong home-menu-item" id="servicesDashboardBtn">Home</button>
+            <button class="menu-action" id="servicesLibraryBtn">Library</button>
+            <a class="menu-action" id="servicesPublishedPlansBtn" href="/churchsuite-plans" target="_blank" rel="noopener" hidden>ChurchSuite Plans ↗</a>
+            <button id="servicesCloseBtn" type="button" hidden>Back to last service</button>
+          </div>
+          <div id="dashboardHeaderNav" class="menu-section" aria-label="Dashboard navigation" hidden>
+            <button class="menu-action menu-action-strong" id="dashboardFullPlannerBtn">Full planner</button>
+            <button class="menu-action" id="dashboardLibraryBtn">Song Library</button>
+          </div>
+          <div class="menu-section header-account-nav" aria-label="Account and settings">
+            <button class="menu-action" id="headerSettingsBtn" type="button">Settings</button>
+            <button class="menu-action" id="headerProfileBtn" type="button">Profile</button>
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
   <main class="shell">
     <section class="service-head">
-      <div>
-        <div class="eyebrow" id="serviceDate">Sunday 16 August 2026</div>
+      <div class="service-identity">
+        <div class="service-date-major" id="serviceDate">Sunday 16 August 2026</div>
         <div class="title-line">
           <h1 id="serviceTitle" role="button" tabindex="0" title="Switch service plan">Morning Service</h1>
         </div>
-        <div class="meta service-theme-line"><span class="service-theme-label">OpenLP theme</span><button class="linkish" id="themeBtn">KSSS (am) white</button></div>
-      </div>
-      <div class="head-actions service-head-actions">
-        <button class="secondary service-template-choice" id="currentServiceTemplateBtn" type="button">Template</button>
-        <button class="secondary service-template-save" id="saveCurrentServiceTemplateBtn" type="button">Save as template</button>
+        <div class="service-theme-line">
+          <button class="icon-pill transient-label two-step-action" id="themeBtn" type="button" data-two-step-action="1" data-transient-prefix="Theme" title="OpenLP theme" aria-label="OpenLP theme"><span aria-hidden="true">◐</span><span class="transient-label-text" id="themeLabel">Theme</span></button>
+        </div>
       </div>
     </section>
 
@@ -72,21 +82,21 @@
   </main>
 
 
+  <section class="dashboard-page" id="dashboardPage" hidden aria-label="Dashboard">
+    <div class="dashboard-page-inner" id="dashboardPageInner"></div>
+  </section>
+
   <section class="services-page" id="servicesPage" hidden aria-label="Service plans">
     <div class="services-page-inner">
       <div class="services-page-head">
-        <div>
-          <div class="eyebrow">SERVICES</div>
-          <h1>Service plans</h1>
-          <p class="services-page-subtitle">Plan ahead and review service readiness.</p>
-        </div>
+        <div><h1>Services</h1></div>
       </div>
       <div class="services-table-wrap">
         <table class="services-table">
           <thead><tr>
             <th class="service-select-cell"><input id="servicesSelectAll" type="checkbox" aria-label="Select all services"></th>
             <th>Service</th><th>Date</th><th>Progress</th>
-            <th data-cs-column>ChurchSuite plan</th><th data-cs-column>ChurchSuite updated</th><th></th>
+            <th data-cs-column>ChurchSuite</th><th></th>
           </tr></thead>
           <tbody id="servicesTableBody"></tbody>
         </table>
@@ -96,18 +106,46 @@
   </section>
 
   <footer class="app-footer planner-footer" id="plannerFooter">
-    <div class="footer-inner">
-      <button class="primary footer-primary" id="addBtn">＋ Item</button>
-      <button class="secondary footer-icon-button" id="undoBtn" title="Undo last change" aria-label="Undo last change">↶ <span>Undo</span></button>
-      <button class="secondary footer-icon-button" id="redoBtn" title="Redo last undone change" aria-label="Redo last undone change">↷ <span>Redo</span></button>
-      <button class="secondary footer-sync-cs" id="plannerSyncChurchSuiteBtn" hidden title="Sync this service with ChurchSuite"><span class="sync-icon" aria-hidden="true">↻</span><span>ChurchSuite</span></button>
-      <button class="secondary" id="openLPViewBtn" aria-pressed="false">OpenLP view</button>
+    <div class="footer-inner planner-footer-inner">
+      <div class="footer-plan-stack" id="footerPlanStack">
+        <div class="app-menu footer-menu">
+          <button class="primary footer-menu-trigger menu-trigger" id="plannerActionsMenuBtn" type="button" aria-expanded="false" aria-controls="plannerActionsMenu"><span class="burger-glyph" aria-hidden="true">≡</span><span>Edit</span></button>
+          <div class="app-menu-panel footer-menu-panel" id="plannerActionsMenu" hidden>
+            <button class="menu-action menu-action-primary" id="addBtn">＋ Item</button>
+            <button class="menu-action" id="currentServiceTemplateBtn" type="button">Template</button>
+          </div>
+        </div>
+        <button class="planner-export-ready" id="plannerExportBtn" type="button" title="Export this service to OpenLP"><span aria-hidden="true">⇩</span> OpenLP</button>
+      </div>
+      <div class="planner-footer-nav-pair" id="plannerFooterNavPair">
+        <button class="service-list-footer-btn" id="plannerServiceListBtn" type="button" title="Back to services"><span class="footer-nav-icon" aria-hidden="true">☷</span><span>Services</span></button>
+        <button class="service-list-footer-btn" id="plannerHomeBtn" type="button" title="Home"><span class="footer-nav-icon" aria-hidden="true">⌂</span><span>Home</span></button>
+      </div>
+      <div class="app-menu footer-menu footer-history-wrap" id="footerHistoryWrap" hidden>
+        <button class="footer-history-trigger" id="footerHistoryMenuBtn" type="button" aria-expanded="false" aria-controls="footerHistoryMenu" title="Undo or redo changes" aria-label="Undo or redo changes"><span aria-hidden="true">↶↷</span><span>Undo/Redo</span></button>
+        <div class="app-menu-panel footer-menu-panel footer-history-menu" id="footerHistoryMenu" hidden>
+          <button class="menu-action" id="undoBtn" title="Undo last change">↶ Undo</button>
+          <button class="menu-action" id="redoBtn" title="Redo last undone change">↷ Redo</button>
+          <button class="menu-action history-reset-action" id="resetEditBtn" title="Return to the state from when this service was opened">↺ Reset this edit</button>
+        </div>
+      </div>
+      <button class="openlp-return" id="openLPReturnBtn" type="button" hidden aria-label="Return to full service plan" title="Return to full service plan"><span aria-hidden="true">←</span></button>
+      <div class="app-menu footer-menu" id="churchSuiteActionsWrap" hidden>
+        <button class="secondary footer-menu-trigger menu-trigger" id="churchSuiteActionsMenuBtn" type="button" aria-expanded="false" aria-controls="churchSuiteActionsMenu"><span class="burger-glyph" aria-hidden="true">≡</span><span>ChurchSuite</span></button>
+        <div class="app-menu-panel footer-menu-panel" id="churchSuiteActionsMenu" hidden>
+          <button class="menu-action menu-action-primary express-sync-menu-action" id="plannerExpressChurchSuiteBtn" title="Use the default ChurchSuite sync"><span aria-hidden="true">⚡</span> Express Sync</button>
+          <button class="menu-action" id="plannerSyncChurchSuiteBtn" title="Choose ChurchSuite sync options"><span aria-hidden="true">↻</span> Sync options</button>
+          <a class="menu-action" id="plannerViewChurchSuiteBtn" target="_blank" rel="noopener" hidden>View ChurchSuite plan ↗</a>
+          <button class="menu-action" id="openLPViewBtn" aria-pressed="false">OpenLP View</button>
+        </div>
+      </div>
     </div>
   </footer>
 
   <footer class="app-footer services-footer" id="servicesFooter" hidden>
     <div class="footer-inner">
       <button class="primary footer-primary" id="servicesAddBtn">＋ Service</button>
+      <button class="secondary services-home-btn" id="servicesHomeBtn" type="button"><span aria-hidden="true">⌂</span><span>Home</span></button>
       <button class="danger solid-danger" id="servicesDeleteSelectedBtn" hidden disabled>Delete selected</button>
       <button class="secondary" id="servicesSyncChurchSuiteBtn" hidden>Sync ChurchSuite</button>
     </div>
@@ -148,6 +186,6 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=17637"></script>
+  <script src="app.js?v=1800"></script>
 </body>
 </html>

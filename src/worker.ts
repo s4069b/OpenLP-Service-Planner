@@ -554,7 +554,7 @@ async function churchSuiteSongSelectionState(env: Cloudflare.Env, planId: number
   const songItems = items.filter((item:any)=>item?.type === "song");
   const total = songItems.length;
   const selected = songItems.filter((item:any)=>
-    Number(item?.arrangement_id || 0) > 0
+    Number(item?.arrangement_id || item?.song_arrangement_id || item?.arrangement?.id || 0) > 0
   ).length;
 
   const state =
@@ -982,7 +982,7 @@ button:hover{background:#fafafa}.list{border:1px solid var(--line);border-radius
       ${canResync?`<button type="button" id="directoryResync" data-sync-url="${htmlEscape(configuredPath)}" data-next-allowed-at="${nextSyncAllowedAt}" ${syncCooldownActive?'disabled':''}>↻ Re-sync</button>`:""}
       <form method="post" action="/auth/logout"><button type="submit">Log out</button></form>
     </div>
-    ${canResync?`<a class="planner-return-link" href="/">Back to OpenLP Service Planner</a>`:""}
+    ${canResync?`<a class="planner-return-link" href="/?screen=home">OpenLP Planner Home</a>`:""}
     ${canResync?`<div class="sync-cooldown-note" id="syncCooldownNote" ${syncCooldownActive?'':'hidden'}></div>`:""}
   </div>
 </header>
@@ -1006,7 +1006,19 @@ function safeJson<T>(value: string | null, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
+let serviceRevisionColumnReady = false;
+
+async function hasServiceRevisionColumn(env: Cloudflare.Env) {
+  if (serviceRevisionColumnReady) return true;
+  const columns = await env.DB.prepare("PRAGMA table_info(services)").all<any>();
+  const available = columns.results.some((column: any) => String(column.name) === "revision");
+  if (available) serviceRevisionColumnReady = true;
+  return available;
+}
+
 async function bootstrap(env: Cloudflare.Env) {
+  const serviceRevisionAvailable = await hasServiceRevisionColumn(env);
+
   const settingsRows = await env.DB.prepare(
     "SELECT key, value_json FROM planner_settings"
   ).all<{ key: string; value_json: string }>();
@@ -1022,7 +1034,8 @@ async function bootstrap(env: Cloudflare.Env) {
             service_type_id,service_type_name,
             last_edited_at,last_edited_by,last_edited_action,
             churchsuite_plan_id,churchsuite_plan_identifier,churchsuite_plan_url,
-            churchsuite_last_updated,churchsuite_last_synced,churchsuite_import_mode,churchsuite_out_of_sync,churchsuite_out_of_sync_reason
+            churchsuite_last_updated,churchsuite_last_synced,churchsuite_import_mode,churchsuite_out_of_sync,churchsuite_out_of_sync_reason,
+            ${serviceRevisionAvailable ? "revision" : "0 AS revision"}
      FROM services
      ORDER BY date_iso, title`
   ).all<any>();
@@ -1066,6 +1079,7 @@ async function bootstrap(env: Cloudflare.Env) {
       churchSuiteImportMode: row.churchsuite_import_mode || undefined,
       churchSuiteOutOfSync: !!row.churchsuite_out_of_sync,
       churchSuiteOutOfSyncReason: row.churchsuite_out_of_sync_reason || undefined,
+      revision: Number(row.revision||0),
       items: itemsRows.results.map(x => safeJson(x.item_json, {})),
       activity: auditRows.results.map(x => [
         x.actor,
@@ -1163,6 +1177,29 @@ async function upsertService(env: Cloudflare.Env, service: any) {
     service.churchSuiteOutOfSync ? 1 : 0,
     service.churchSuiteOutOfSyncReason || null
   ).run();
+}
+
+async function claimServiceRevision(env: Cloudflare.Env, serviceId: string, baseRevision: unknown) {
+  const expected=Number(baseRevision);
+  if (!(await hasServiceRevisionColumn(env))) {
+    // Backward-compatible rescue path for deployments where migration 0021 has
+    // not yet been applied. Saves continue with pre-1.76.51 behaviour until the
+    // normal migration is applied, after which revision conflict protection is
+    // enabled automatically.
+    return {ok:true,revision:Number.isFinite(expected)?expected:0};
+  }
+  if(!Number.isFinite(expected)) return {ok:false,status:400,error:"Missing service revision."};
+  const result=await env.DB.prepare(
+    `UPDATE services SET revision=revision+1 WHERE id=? AND revision=?`
+  ).bind(serviceId,expected).run();
+  if(Number(result.meta?.changes||0)!==1){
+    const row=await env.DB.prepare(
+      `SELECT revision,last_edited_at,last_edited_by,last_edited_action FROM services WHERE id=?`
+    ).bind(serviceId).first<any>();
+    if(!row)return {ok:false,status:404,error:"Service not found."};
+    return {ok:false,status:409,error:"This service has changed on another device.",revision:Number(row.revision||0),lastEditedAt:row.last_edited_at||null,lastEditedBy:row.last_edited_by||null,lastEditedAction:row.last_edited_action||null};
+  }
+  return {ok:true,revision:expected+1};
 }
 
 async function upsertItem(env: Cloudflare.Env, serviceId: string, item: any) {
@@ -2076,6 +2113,38 @@ async function churchSuiteResolvePlan(env: Cloudflare.Env, identifier: string) {
   return plan;
 }
 
+function churchSuitePassageField(questionResponses: any) {
+  if (!Array.isArray(questionResponses)) return "";
+
+  // Bible mapping deliberately uses only the ChurchSuite field/question named
+  // "Passage". Do not infer a reference from the item title, reader, comments,
+  // notes, or any other question response.
+  const passageQuestion = questionResponses.find((q: any) =>
+    !q?.hidden && String(q?.name || "").trim().toLowerCase() === "passage"
+  );
+  if (!passageQuestion) return "";
+
+  const value = passageQuestion.value;
+
+  if (passageQuestion?.response_type === "bible" && Array.isArray(value)) {
+    return value.map((ref: any) => {
+      const book = String(ref?.book || "").trim();
+      const reference = String(ref?.reference || "").trim();
+      const version = String(ref?.version || "").trim();
+      const passage = [book, reference].filter(Boolean).join(" ").trim();
+      return [passage, version ? `(${version})` : ""].filter(Boolean).join(" ").trim();
+    }).filter(Boolean).join("; ");
+  }
+
+  if (typeof value === "string") return value.trim();
+
+  if (Array.isArray(value) && value.every((x: any) => typeof x === "string")) {
+    return value.map((x: string) => x.trim()).filter(Boolean).join("; ");
+  }
+
+  return "";
+}
+
 function churchSuiteQuestionText(questionResponses: any) {
   if (!Array.isArray(questionResponses)) return "";
   const parts: string[] = [];
@@ -2100,6 +2169,26 @@ function churchSuiteQuestionText(questionResponses: any) {
   return parts.join(" · ");
 }
 
+function churchSuitePlanItemPeople(item: any) {
+  if (!Array.isArray(item?.people)) return [];
+  return item.people
+    .map((person: any) => {
+      const first = String(person?.first_name || "").trim();
+      const last = String(person?.last_name || "").trim();
+      const name = [first,last].filter(Boolean).join(" ").trim();
+      if (!name) return null;
+      return {
+        id: person?.id ?? null,
+        type: String(person?.type || ""),
+        firstName: first,
+        lastName: last,
+        name
+      };
+    })
+    .filter(Boolean);
+}
+
+
 function churchSuitePlanItemDetails(item: any) {
   const pieces: string[] = [];
   if (item?.comment) pieces.push(String(item.comment));
@@ -2115,6 +2204,7 @@ function churchSuitePlanItemDetails(item: any) {
 
 async function churchSuiteBuildPlan(env: Cloudflare.Env, plan: any) {
   const planId = Number(plan.id);
+  const allowPeople = await plannerSetting(env,"churchSuiteImportPeopleEnabled",false);
   const [itemsPayload, types] = await Promise.all([
     churchSuiteFetch(env, `/planning/plan_items?plan_ids[]=${planId}&per_page=250`),
     churchSuiteListAll(env, "/planning/types")
@@ -2133,21 +2223,42 @@ async function churchSuiteBuildPlan(env: Cloudflare.Env, plan: any) {
   const resultItems: any[] = [];
 
   for (const item of planItems) {
-    if (item?.type === "song" && item?.arrangement_id) {
-      const arrangementId = Number(item.arrangement_id);
-      let arrangement = arrangementCache.get(arrangementId);
-      if (!arrangement) {
-        arrangement = (await churchSuiteFetch(env, `/planning/song_arrangements/${arrangementId}`))?.data;
-        arrangementCache.set(arrangementId, arrangement);
+    if (String(item?.type || "").toLowerCase() === "song") {
+      // Every ChurchSuite song plan item must reach the browser as a song.
+      // The arrangement enriches the item when present, but it must not be a
+      // prerequisite: templates consume these song entries positionally.
+      const arrangementId = Number(
+        item?.arrangement_id ||
+        item?.song_arrangement_id ||
+        item?.arrangement?.id ||
+        0
+      ) || null;
+
+      let arrangement: any = null;
+      if (arrangementId) {
+        arrangement = arrangementCache.get(arrangementId);
+        if (!arrangement) {
+          try {
+            arrangement = (await churchSuiteFetch(env, `/planning/song_arrangements/${arrangementId}`))?.data;
+            if (arrangement) arrangementCache.set(arrangementId, arrangement);
+          } catch (_) {
+            // Keep the song slot even if enrichment fails.
+          }
+        }
       }
 
+      const directSongId = Number(item?.song_id || item?.song?.id || 0) || null;
+      const songId = Number(arrangement?.song_id || directSongId || 0) || null;
       let song: any = null;
-      if (arrangement?.song_id) {
-        const songId = Number(arrangement.song_id);
+      if (songId) {
         song = songCache.get(songId);
         if (!song) {
-          song = (await churchSuiteFetch(env, `/planning/songs/${songId}`))?.data;
-          songCache.set(songId, song);
+          try {
+            song = (await churchSuiteFetch(env, `/planning/songs/${songId}`))?.data;
+            if (song) songCache.set(songId, song);
+          } catch (_) {
+            // The plan-item title is still enough to preserve the song slot.
+          }
         }
       }
 
@@ -2155,12 +2266,13 @@ async function churchSuiteBuildPlan(env: Cloudflare.Env, plan: any) {
         order: Number(item.order || resultItems.length + 1),
         sourceId: String(item.id),
         kind: "song",
-        title: String(song?.name || arrangement?.name || item?.name || "Song"),
+        title: String(song?.name || arrangement?.name || item?.name || item?.title || "Song"),
         typeName: "Song",
-        ccli: song?.ccli ?? null,
+        ccli: song?.ccli ?? item?.ccli ?? null,
         arrangementId,
-        songId: song?.id ?? null,
-        details: ""
+        songId: song?.id ?? songId,
+        details: "",
+        people: allowPeople ? churchSuitePlanItemPeople(item) : []
       });
       continue;
     }
@@ -2172,7 +2284,9 @@ async function churchSuiteBuildPlan(env: Cloudflare.Env, plan: any) {
       title: String(item?.name || typeMap.get(Number(item?.type_id)) || "Plan item"),
       typeName: typeMap.get(Number(item?.type_id)) || "",
       ccli: null,
-      details: churchSuitePlanItemDetails(item)
+      details: churchSuitePlanItemDetails(item),
+      passage: churchSuitePassageField(item?.question_responses),
+      people: allowPeople ? churchSuitePlanItemPeople(item) : []
     });
   }
 
@@ -2351,6 +2465,27 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
       });
     } catch (error: any) {
       return json({ error: String(error?.message || error) }, { status: 502 });
+    }
+  }
+
+  if (path === "/api/churchsuite/song-library" && request.method === "GET") {
+    if(!(await churchSuitePlanningExtensionEnabled(env))){
+      return json({error:"ChurchSuite extension is disabled."},{status:409});
+    }
+    try{
+      const rows=await churchSuiteListAll(env,"/planning/songs");
+      const songs=rows.map((song:any)=>({
+        id:song?.id??null,
+        title:String(song?.name||song?.title||"").trim(),
+        ccli:String(song?.ccli??song?.ccli_number??song?.ccliNumber??"").trim(),
+        authors:Array.isArray(song?.authors)
+          ?song.authors.map((a:any)=>String(a?.name||a||"").trim()).filter(Boolean)
+          :String(song?.author||song?.authors_text||"").split(",").map((x:string)=>x.trim()).filter(Boolean),
+        copyright:String(song?.copyright||"").trim()
+      })).filter((song:any)=>song.title);
+      return json({songs});
+    }catch(error:any){
+      return json({error:String(error?.message||error)},{status:502});
     }
   }
 
@@ -2929,9 +3064,11 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
     const body = await request.json<any>();
     if (!body.service?.id) return json({ error: "Missing service." }, { status: 400 });
     const serviceId = String(body.service.id);
+    const existing=await env.DB.prepare("SELECT id FROM services WHERE id=?").bind(serviceId).first<any>();
+    if(existing)return json({error:"Service already exists. Reload the latest shared service before changing it."},{status:409});
     const items = Array.isArray(body.service.items) ? body.service.items : [];
 
-    await upsertService(env, body.service);
+    await upsertService(env, {...body.service,id:serviceId});
 
     // A POST carries the complete current service. Remove obsolete item rows
     // before writing its current items so repeated ChurchSuite syncs cannot
@@ -2948,7 +3085,7 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
       ).bind(String(item.id), serviceId, i, JSON.stringify(item)).run();
     }
     await upsertSettings(env, { activeServiceId: serviceId });
-    return json({ ok: true });
+    return json({ ok: true, revision:0 });
   }
 
 
@@ -2973,32 +3110,65 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
     }
   }
 
+  const forceServiceMatch = path.match(/^\/api\/services\/([^/]+)\/force-replace$/);
+  if (forceServiceMatch && request.method === "POST") {
+    const serviceId=decodeURIComponent(forceServiceMatch[1]);
+    const body=await request.json<any>();
+    const claim=await claimServiceRevision(env,serviceId,body.baseRevision);
+    if(!claim.ok)return json(claim,{status:claim.status});
+    const service={...(body.service||{}),id:serviceId};
+    const items=Array.isArray(service.items)?service.items:[];
+    await upsertService(env,service);
+    await env.DB.prepare("DELETE FROM service_items WHERE service_id=?").bind(serviceId).run();
+    for(const item of items)await upsertItem(env,serviceId,item);
+    if(items.length){
+      await env.DB.batch(items.map((item:any,index:number)=>
+        env.DB.prepare("UPDATE service_items SET position=?, updated_at=datetime('now') WHERE service_id=? AND id=?")
+          .bind(index,serviceId,String(item.id))
+      ));
+    }
+    return json({ok:true,revision:claim.revision});
+  }
+
   const serviceMatch = path.match(/^\/api\/services\/([^/]+)$/);
   if (serviceMatch && request.method === "PUT") {
+    const serviceId=decodeURIComponent(serviceMatch[1]);
     const body = await request.json<any>();
-    await upsertService(env, body.service);
-    return json({ ok: true });
+    const claim=await claimServiceRevision(env,serviceId,body.baseRevision);
+    if(!claim.ok)return json(claim,{status:claim.status});
+    const service={...(body.service||{}),id:serviceId};
+    await upsertService(env, service);
+    return json({ ok: true, revision:claim.revision });
   }
 
   const itemMatch = path.match(/^\/api\/services\/([^/]+)\/items\/([^/]+)$/);
   if (itemMatch && request.method === "PUT") {
     const serviceId = decodeURIComponent(itemMatch[1]);
     const body = await request.json<any>();
-    await upsertItem(env, serviceId, body.item);
-    return json({ ok: true });
+    const claim=await claimServiceRevision(env,serviceId,body.baseRevision);
+    if(!claim.ok)return json(claim,{status:claim.status});
+    const item={...(body.item||{}),id:decodeURIComponent(itemMatch[2])};
+    await upsertItem(env, serviceId, item);
+    return json({ ok: true, revision:claim.revision });
   }
 
   if (itemMatch && request.method === "DELETE") {
+    const serviceId=decodeURIComponent(itemMatch[1]);
+    const body=await request.json<any>().catch(()=>({}));
+    const claim=await claimServiceRevision(env,serviceId,body.baseRevision);
+    if(!claim.ok)return json(claim,{status:claim.status});
     await env.DB.prepare(
       "DELETE FROM service_items WHERE service_id=? AND id=?"
-    ).bind(decodeURIComponent(itemMatch[1]), decodeURIComponent(itemMatch[2])).run();
-    return json({ ok: true });
+    ).bind(serviceId, decodeURIComponent(itemMatch[2])).run();
+    return json({ ok: true, revision:claim.revision });
   }
 
   const orderMatch = path.match(/^\/api\/services\/([^/]+)\/order$/);
   if (orderMatch && request.method === "PUT") {
     const serviceId = decodeURIComponent(orderMatch[1]);
     const body = await request.json<any>();
+    const claim=await claimServiceRevision(env,serviceId,body.baseRevision);
+    if(!claim.ok)return json(claim,{status:claim.status});
     const ids = Array.isArray(body.itemIds) ? body.itemIds : [];
     const stmts = ids.map((id: string, index: number) =>
       env.DB.prepare(
@@ -3006,7 +3176,7 @@ async function handleApi(request: Request, env: Cloudflare.Env): Promise<Respons
       ).bind(index, serviceId, String(id))
     );
     if (stmts.length) await env.DB.batch(stmts);
-    return json({ ok: true });
+    return json({ ok: true, revision:claim.revision });
   }
 
   const auditDeleteMatch = path.match(/^\/api\/services\/([^/]+)\/audit$/);

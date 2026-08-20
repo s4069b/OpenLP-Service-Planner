@@ -2904,7 +2904,7 @@ dialog:not([open]) .media-drag-ghost{
 }
 .churchsuite-service-mapping-row{
   display:grid;
-  grid-template-columns:minmax(150px,1fr) auto minmax(170px,1fr);
+  grid-template-columns:minmax(150px,1fr) auto minmax(170px,1fr) auto;
   gap:8px;
   align-items:center;
   padding:9px 10px;
@@ -2935,7 +2935,12 @@ dialog:not([open]) .media-drag-ghost{
     grid-template-columns:1fr auto;
   }
   .churchsuite-service-mapping-row select{
-    grid-column:1/-1;
+    grid-column:1/-2;
+  }
+  .churchsuite-service-mapping-row .cs-mapping-delete{
+    grid-column:-2/-1;
+    grid-row:2;
+    align-self:center;
   }
 }
 
@@ -3974,3 +3979,1793 @@ a.ms.churchsuite-signin{
     margin-top:14px;
   }
 }
+
+/* ============================================================
+   v17641 — simplified planner/services chrome
+   ============================================================ */
+.top-context{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.02em;justify-self:center;white-space:nowrap}
+.icon-control{width:38px;height:38px;padding:0!important;display:grid;place-items:center;border-radius:10px;font-size:18px!important}
+.icon-control:hover{background:var(--soft)}
+.top-actions{display:flex!important;align-items:center!important;justify-content:flex-end;gap:5px!important}
+.top-status{margin-right:4px}
+.settings-icon{font-size:16px!important}
+.app-menu{position:relative}
+.app-menu-panel{position:absolute;z-index:4000;min-width:210px;padding:7px;background:var(--panel);border:1px solid var(--line);border-radius:13px;box-shadow:0 14px 38px rgba(0,0,0,.16)}
+.app-menu-panel[hidden]{display:none!important}
+.header-menu-panel{right:0;top:calc(100% + 8px)}
+.footer-menu-panel{left:0;bottom:calc(100% + 10px)}
+.menu-section{display:flex;flex-direction:column;gap:2px}
+.menu-section[hidden]{display:none!important}
+.menu-action{display:flex;width:100%;align-items:center;text-align:left;text-decoration:none;color:inherit;border:0;background:transparent;border-radius:9px;padding:10px 11px;cursor:pointer;font-size:13px}
+.menu-action:hover{background:var(--soft)}
+.menu-action-primary{font-weight:700}
+.subtle-action{color:var(--muted);font-size:12px}
+.footer-menu-trigger{display:inline-flex;align-items:center;gap:8px;min-width:112px;justify-content:center}
+.planner-footer-inner{justify-content:flex-start}
+.openlp-return{font-weight:700}
+
+/* ChurchSuite mode is apparent without changing the status-colour system. */
+body.churchsuite-mode .topbar{box-shadow:inset 0 -3px 0 rgba(87,106,137,.22)}
+body.churchsuite-mode #plannerContextLabel{color:#596b86}
+
+/* Service identity: date and title share the visual hierarchy. */
+.service-head{align-items:flex-start!important}
+.service-identity{min-width:0}
+.service-date-major{font-size:27px;font-weight:680;letter-spacing:-.02em;line-height:1.08;color:var(--ink);margin-bottom:4px}
+.service-head h1{font-size:34px!important;margin:0 0 10px!important;line-height:1.08!important}
+.service-theme-line{min-height:30px}
+.icon-pill{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;min-width:32px;height:30px;padding:0 8px;display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.transient-label{position:relative}
+.transient-label-text{display:none;white-space:nowrap}
+.transient-label.show-label .transient-label-text,.transient-label:hover .transient-label-text,.transient-label:focus .transient-label-text{display:inline}
+#themeBtn .transient-label-text{font-size:11px}
+
+/* Planner rows: keep the title dominant and move metadata into subtle visual cues. */
+.item{grid-template-columns:34px minmax(0,1fr) auto!important}
+.item-title{font-size:15px;font-weight:680}
+.item-sub{align-items:center!important;gap:7px!important;color:var(--muted)}
+.item-sub .person{font-weight:600;color:#626267}
+.item-actions{display:flex;align-items:center;gap:7px}
+.status-icon{border:0;background:transparent;padding:4px 6px;border-radius:8px;cursor:pointer;font-weight:800;min-width:30px;min-height:30px}
+.status-icon.ready{color:#355843}.status-icon.missing{color:var(--warn)}.status-icon.plan{color:var(--muted)}
+.status-icon:hover,.status-icon.show-label{background:var(--soft)}
+.item-flags{display:inline-flex;align-items:center;gap:4px}
+.item-flag{display:inline-flex;min-width:21px;height:21px;align-items:center;justify-content:center;padding:0 5px;border:1px solid rgba(0,0,0,.06);border-radius:999px;background:rgba(0,0,0,.025);font-size:9px;font-weight:750;color:#737378}
+.item-flag.show-label,.item-flag:hover,.item-flag:focus{padding:0 7px}
+.item-image-thumb{position:relative;width:54px;height:36px;border-radius:7px;overflow:hidden;display:inline-block;vertical-align:middle;border:1px solid var(--line);background:#eee}
+.item-image-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.image-count{position:absolute;right:2px;bottom:2px;min-width:16px;height:16px;padding:0 3px;border-radius:6px;background:rgba(0,0,0,.68);color:#fff;font-size:9px;display:grid;place-items:center}
+.autoplay-overlay{position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,.9);display:grid;place-items:center;font-size:11px;color:#333}
+.item-image-empty{width:32px;height:26px;border:1px dashed var(--line);border-radius:6px;display:inline-grid;place-items:center;color:var(--muted)}
+
+/* Services table simplification. */
+.services-page-inner{padding-left:max(34px,var(--screen-gutter))!important;padding-right:max(34px,var(--screen-gutter))!important}
+.services-page-head h1{margin:0!important;font-size:34px!important}
+.services-table th{font-size:10px!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.05em}
+.service-name-with-type{display:flex;align-items:center;gap:10px;min-width:0}
+.service-type-dot{position:relative;width:17px;height:17px;min-width:17px;border-radius:50%;border:0;background:var(--service-type-colour,#777);cursor:pointer;padding:0}
+.service-type-dot .transient-label-text{position:absolute;z-index:5;left:24px;top:50%;transform:translateY(-50%);padding:5px 7px;background:#242427;color:white;border-radius:7px;font-size:10px;box-shadow:0 4px 15px rgba(0,0,0,.18)}
+.services-open-service strong{font-size:14px!important}
+.service-date-cell{white-space:nowrap}.service-date-cell span,.service-date-cell strong,.service-date-cell small{display:block}.service-date-cell .service-day{font-size:12px;font-weight:650}.service-date-cell strong{font-size:13px}.service-date-cell small{font-size:10px;color:var(--muted)}
+.service-progress{display:inline-flex!important;position:relative;width:26px;height:26px;border-radius:50%;align-items:center;justify-content:center;padding:0!important;min-width:0!important}
+.service-progress .progress-dot{width:10px;height:10px;border-radius:50%;background:currentColor}
+.service-progress .transient-label-text{position:absolute;z-index:8;left:32px;top:50%;transform:translateY(-50%);padding:5px 7px;border-radius:7px;background:#242427;color:white;font-size:10px}
+.churchsuite-compact-status{display:grid;grid-template-columns:auto minmax(95px,auto) auto minmax(95px,auto);gap:6px;align-items:center}
+.cs-icon-action,.cs-icon-muted{width:28px;height:28px;display:inline-grid;place-items:center;border-radius:8px;border:1px solid var(--line);background:transparent;color:#596b86;font-size:10px;font-weight:800;padding:0}
+.cs-icon-action{cursor:pointer}.cs-icon-action:hover,.cs-icon-action.tap-armed{background:rgba(87,106,137,.09);border-color:rgba(87,106,137,.24)}
+.cs-icon-action .transient-label-text{position:absolute;z-index:10;left:34px;top:50%;transform:translateY(-50%);padding:5px 7px;border-radius:7px;background:#242427;color:white;font-size:10px}
+.cs-date{font-size:10.5px;color:var(--muted);white-space:nowrap}
+.service-actions-cell{width:42px}.service-delete-btn{background:transparent!important;border-color:transparent!important}
+
+/* Library hierarchy */
+.library-hub-groups{display:grid;gap:22px}.library-hub-group h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 8px}.library-hub-primary .library-card-major{grid-column:1/-1;padding:22px}.library-card-major strong{font-size:18px}.library-card-minor{opacity:.82}.library-hub-templates{padding-top:18px;border-top:1px solid var(--line)}.single-card-grid{grid-template-columns:1fr!important}
+.service-type-colour-field input[type=color]{padding:3px!important;height:43px}
+
+@media(max-width:900px){
+  .top-status{display:block!important;max-width:230px!important;font-size:10px}
+  .top-status .projector-status-note{display:none!important}
+}
+@media(max-width:700px){
+  :root{--app-header-h:64px!important;--app-footer-h:64px!important;--screen-gutter:22px}
+  .topbar{height:64px!important;grid-template-columns:auto 1fr auto!important;grid-template-rows:1fr!important;padding:0 14px!important;gap:6px!important}
+  .brand{grid-column:1!important;grid-row:1!important}.top-context{display:none}.top-actions{grid-column:2/4!important;grid-row:1!important}
+  .top-status{display:none!important}.icon-control{width:34px;height:34px}
+  .app-menu-panel{min-width:200px}.header-menu-panel{right:0;top:42px}.footer-menu-panel{bottom:48px}
+  .shell{padding:18px 28px 28px!important}.services-page-inner{padding:18px 28px 30px!important}
+  .service-date-major{font-size:21px}.service-head h1{font-size:28px!important}
+  .readiness{margin-top:18px!important}
+  .service-list .item{grid-template-columns:24px minmax(0,1fr) auto!important;padding:13px 10px!important;gap:7px!important}
+  .service-list .item>.item-actions{grid-column:3!important;grid-row:1/3!important;align-self:center!important;flex-direction:column!important}
+  .item-image-thumb{width:48px;height:32px}.item-sub{font-size:11px!important}.item-flag{height:19px;min-width:19px}
+  .planner-footer-inner{padding:0 18px!important;overflow:visible!important}.footer-menu-trigger{min-width:104px!important;height:42px!important}
+  .openlp-return{height:42px!important}
+  .services-page-head h1{font-size:28px!important}
+  .tidy-mobile-head{display:grid!important;grid-template-columns:auto auto minmax(0,1fr) auto auto!important;gap:8px!important;align-items:center!important}
+  .service-mobile-select{margin:0}.tidy-mobile-head .service-type-dot{align-self:center}.tidy-mobile-head .services-open-service{min-width:0}.tidy-mobile-head .service-progress{justify-self:end}
+  .mobile-date-major{display:block;margin-top:4px;font-size:11px;color:var(--muted)}.mobile-date-major small{font-size:9px}
+  .churchsuite-mobile-compact{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:6px;align-items:center;margin-top:10px;padding-top:9px;border-top:1px solid var(--line);font-size:10px;color:var(--muted)}
+  .library-hub-primary .library-card-major{grid-column:auto}.library-card-major strong{font-size:16px}
+}
+
+/* v1.76.42 — compact navigation/action fixes */
+#headerMenuBtn{
+  width:42px!important;
+  height:38px!important;
+  border:1px solid var(--line)!important;
+  background:var(--soft)!important;
+  font-size:21px!important;
+  font-weight:800!important;
+  box-shadow:0 1px 2px rgba(0,0,0,.04);
+}
+#headerMenuBtn:hover,#headerMenuBtn[aria-expanded="true"]{background:#ecece7!important;border-color:#cfcfc8!important}
+.service-list-footer-btn{margin-left:2px;white-space:nowrap}
+.two-step-action:hover .transient-label-text{display:none!important}
+.two-step-action.show-label .transient-label-text,
+.two-step-action.tap-armed .transient-label-text{display:inline!important}
+#themeBtn.tap-armed{background:var(--soft);border-color:#cfcfc8;color:var(--ink)}
+.churchsuite-compact-status{display:flex!important;align-items:flex-start!important;gap:15px!important}
+.cs-action-stack{position:relative;display:inline-flex;flex-direction:column;align-items:center;gap:3px;min-width:46px}
+.cs-action-stack .cs-date{font-size:9.5px;line-height:1.15;text-align:center;white-space:nowrap;color:var(--muted)}
+.cs-action-stack .cs-icon-action .transient-label-text{left:50%;top:34px;transform:translateX(-50%);min-width:max-content;max-width:220px;text-align:center}
+.churchsuite-mobile-compact{display:flex!important;align-items:flex-start!important;gap:18px!important}
+.churchsuite-mobile-compact .cs-action-stack{min-width:52px}
+@media(max-width:700px){
+  #headerMenuBtn{width:38px!important;height:36px!important;font-size:20px!important}
+  .planner-footer-inner{gap:7px!important}
+  .service-list-footer-btn{height:42px!important;min-width:94px!important;padding-left:12px!important;padding-right:12px!important}
+  .cs-action-stack .cs-date{font-size:9px}
+}
+
+/* v1.76.43 — footer repair, transient confirmations and ready-to-export action */
+.two-step-action:focus .transient-label-text{display:none!important}
+.two-step-action.show-label .transient-label-text,
+.two-step-action.tap-armed .transient-label-text{display:inline!important}
+#openLPReturnBtn[hidden],
+#plannerActionsMenuBtn[hidden],
+#churchSuiteActionsWrap[hidden],
+#footerPlanStack[hidden]{display:none!important}
+
+/* The planner footer intentionally has two levels: editing/navigation above,
+   the finished/export action directly below Plan. */
+#plannerFooter{height:112px}
+body:not(.services-page-open) .shell{bottom:112px!important}
+#plannerFooter .planner-footer-inner{
+  min-height:112px;
+  align-items:flex-start;
+  padding-top:10px;
+  padding-bottom:10px;
+}
+.footer-plan-stack{display:flex;flex-direction:column;gap:7px;align-items:stretch;flex:0 0 auto}
+.footer-plan-stack>.app-menu{width:100%}
+.footer-plan-stack .footer-menu-trigger{width:100%}
+.planner-export-ready{
+  min-height:36px;
+  border:1px solid #42674c;
+  border-radius:11px;
+  padding:7px 12px;
+  background:#557d5f;
+  color:white;
+  font-weight:750;
+  cursor:pointer;
+  white-space:nowrap;
+  box-shadow:0 2px 7px rgba(50,90,60,.16);
+}
+.planner-export-ready:hover,.planner-export-ready:focus{background:#496f53;border-color:#385b42}
+#plannerFooter #churchSuiteActionsWrap,
+#plannerFooter .service-list-footer-btn,
+#plannerFooter .openlp-return{margin-top:1px}
+
+/* OpenLP-only view is a distinct footer state: the edit/export stack disappears
+   and the return action cannot be exposed accidentally by responsive CSS. */
+body.openlp-only-view #footerPlanStack{display:none!important}
+body.openlp-only-view #churchSuiteActionsWrap{display:none!important}
+body:not(.openlp-only-view) #openLPReturnBtn{display:none!important}
+body.openlp-only-view #openLPReturnBtn:not([hidden]){display:inline-flex!important}
+
+@media(max-width:700px){
+  #plannerFooter{height:116px!important}
+  body:not(.services-page-open) .shell{bottom:116px!important}
+  #plannerFooter .planner-footer-inner{
+    min-height:116px;
+    padding:9px 12px!important;
+    gap:6px!important;
+    align-items:flex-start!important;
+    overflow:visible!important;
+  }
+  #plannerFooter .footer-plan-stack{width:82px;min-width:82px;gap:6px}
+  #plannerFooter .footer-plan-stack .footer-menu-trigger{min-width:0!important;width:82px!important;height:40px!important;padding:8px 7px!important}
+  #plannerFooter .planner-export-ready{width:82px;min-width:0;min-height:38px;padding:6px 5px;font-size:10px;line-height:1.08;white-space:normal}
+  #plannerFooter #churchSuiteActionsWrap{flex:0 0 92px;min-width:92px}
+  #plannerFooter #churchSuiteActionsMenuBtn{width:92px!important;min-width:92px!important;height:40px!important;padding:8px 6px!important;font-size:11px!important}
+  #plannerFooter .service-list-footer-btn{width:82px!important;min-width:82px!important;height:40px!important;padding:8px 6px!important;font-size:11px!important}
+  #plannerFooter .openlp-return{min-width:0!important;height:42px!important;padding:8px 11px!important}
+  #plannerFooter .footer-menu-panel{bottom:calc(100% + 7px)!important;max-width:calc(100vw - 24px)}
+}
+
+
+/* v1.76.44 — footer alignment and Add Item consistency */
+/* Bible Passage uses a split card so BibleGateway can remain directly available;
+   make its main action visually identical to the ordinary Add Item choices. */
+.choice-with-link .choice-main{
+  box-sizing:border-box;
+  width:100%;
+  margin:0;
+  font:inherit;
+  color:inherit;
+}
+.choice-with-link .choice-main strong{
+  display:block;
+  margin:0 0 4px;
+  color:var(--accent);
+  font:inherit;
+  font-weight:700;
+}
+.choice-with-link .choice-main span{
+  font-size:12px;
+  line-height:1.38;
+  color:var(--muted);
+}
+/* Match the same blue title treatment on the other Add Item cards. */
+.choice-grid>.choice strong{color:var(--accent)}
+
+/* Edit is the left anchor; ChurchSuite is the right anchor. */
+#plannerFooter #churchSuiteActionsWrap{margin-left:auto!important}
+#plannerFooter .service-list-footer-btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  width:112px;
+  min-width:112px;
+  min-height:44px;
+  white-space:nowrap;
+}
+
+@media(max-width:700px){
+  .choice-with-link .choice-main{
+    padding:16px!important;
+    text-indent:0!important;
+  }
+  .choice-with-link .choice-main strong,
+  .choice-with-link .choice-main span{
+    margin-left:0!important;
+    padding-left:0!important;
+    text-indent:0!important;
+  }
+  #plannerFooter .service-list-footer-btn{
+    width:82px!important;
+    min-width:82px!important;
+    height:40px!important;
+    min-height:40px!important;
+    padding:8px 6px!important;
+    font-size:11px!important;
+    gap:4px;
+  }
+  #plannerFooter #churchSuiteActionsWrap{margin-left:auto!important}
+}
+
+
+/* v1.76.45 — contextual history and cleaner planner footer navigation */
+#plannerFooter .planner-footer-inner{position:relative}
+
+/* Services is a neutral back/navigation action and exactly matches Edit. */
+#plannerFooter .service-list-footer-btn{
+  box-sizing:border-box;
+  width:112px;
+  min-width:112px;
+  height:42px;
+  min-height:42px;
+  padding:8px 12px;
+  border:1px solid var(--line);
+  border-radius:11px;
+  background:var(--panel);
+  color:var(--ink);
+  font:inherit;
+  font-weight:650;
+  cursor:pointer;
+  box-shadow:none;
+}
+#plannerFooter .service-list-footer-btn:hover,#plannerFooter .service-list-footer-btn:focus{background:var(--soft);border-color:#cfcfc8}
+#plannerFooter #plannerActionsMenuBtn{box-sizing:border-box;width:112px!important;min-width:112px!important;height:42px!important;min-height:42px!important}
+
+/* Undo/redo only occupies the centre when history exists. */
+#footerHistoryWrap{
+  position:absolute;
+  left:50%;
+  top:10px;
+  transform:translateX(-50%);
+  z-index:20;
+}
+#footerHistoryWrap[hidden]{display:none!important}
+.footer-history-trigger{
+  display:grid;
+  place-items:center;
+  width:46px;
+  height:42px;
+  padding:0;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--panel);
+  color:var(--ink);
+  font-size:18px;
+  font-weight:700;
+  cursor:pointer;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.footer-history-trigger:hover,.footer-history-trigger[aria-expanded="true"]{background:var(--soft)}
+.footer-history-menu{left:50%!important;transform:translateX(-50%);min-width:138px!important}
+.footer-history-menu .menu-action[hidden]{display:none!important}
+
+/* OpenLP-only view gets one quiet return icon and nothing else. */
+body.openlp-only-view #plannerFooter .planner-footer-inner{justify-content:center!important;align-items:center!important;padding-top:0!important;padding-bottom:0!important}
+body.openlp-only-view #footerPlanStack,
+body.openlp-only-view #plannerServiceListBtn,
+body.openlp-only-view #footerHistoryWrap,
+body.openlp-only-view #churchSuiteActionsWrap{display:none!important}
+#plannerFooter .openlp-return{
+  display:inline-grid;
+  place-items:center;
+  width:44px;
+  min-width:44px;
+  height:42px;
+  min-height:42px;
+  padding:0;
+  margin:0!important;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--panel)!important;
+  color:var(--ink)!important;
+  font-size:24px;
+  line-height:1;
+  box-shadow:none;
+  cursor:pointer;
+}
+#plannerFooter .openlp-return:hover,#plannerFooter .openlp-return:focus{background:var(--soft)!important;border-color:#cfcfc8}
+
+@media(max-width:700px){
+  #plannerFooter #plannerActionsMenuBtn,
+  #plannerFooter .service-list-footer-btn{
+    width:82px!important;
+    min-width:82px!important;
+    height:40px!important;
+    min-height:40px!important;
+    padding:8px 6px!important;
+    font-size:11px!important;
+  }
+  #footerHistoryWrap{top:9px}
+  .footer-history-trigger{width:42px;height:40px;font-size:16px}
+  #plannerFooter .openlp-return{width:42px;min-width:42px;height:40px;min-height:40px;font-size:23px}
+}
+body.openlp-only-view #openLPReturnBtn:not([hidden]){display:grid!important}
+
+
+/* v1.76.46 — mobile ChurchSuite prompt and footer history placement */
+/* Timed ChurchSuite prompts must be allowed to escape the mobile service card. */
+@media(max-width:900px){
+  .services-mobile-list,
+  .service-mobile-card,
+  .churchsuite-mobile-compact,
+  .cs-action-stack{overflow:visible!important}
+  .service-mobile-card{position:relative}
+  .cs-action-stack .cs-icon-action .transient-label-text{
+    z-index:120!important;
+    max-width:min(230px,calc(100vw - 40px))!important;
+    white-space:normal!important;
+    line-height:1.25!important;
+  }
+}
+
+/* Services is a compact peer of Edit; older footer flex rules must not stretch it. */
+#plannerFooter #plannerServiceListBtn{
+  flex:0 0 112px!important;
+  width:112px!important;
+  min-width:112px!important;
+  max-width:112px!important;
+}
+
+/* History now lives on the export row and reads as a distinct editing-history action. */
+#footerHistoryWrap{
+  top:auto!important;
+  bottom:10px!important;
+}
+.footer-history-trigger{
+  width:auto!important;
+  min-width:106px!important;
+  height:36px!important;
+  padding:6px 11px!important;
+  display:inline-flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:6px!important;
+  border-color:#c67a2c!important;
+  background:#f3a84f!important;
+  color:#3e2a12!important;
+  font-size:11px!important;
+  font-weight:750!important;
+}
+.footer-history-trigger:hover,.footer-history-trigger[aria-expanded="true"]{
+  background:#e99a3d!important;
+  border-color:#ad6722!important;
+}
+.footer-history-trigger>span:first-child{font-size:15px;line-height:1}
+.footer-history-menu{bottom:calc(100% + 7px)!important}
+
+@media(max-width:700px){
+  #plannerFooter #plannerServiceListBtn{
+    flex:0 0 82px!important;
+    width:82px!important;
+    min-width:82px!important;
+    max-width:82px!important;
+  }
+  #footerHistoryWrap{
+    top:auto!important;
+    bottom:9px!important;
+  }
+  .footer-history-trigger{
+    min-width:92px!important;
+    height:38px!important;
+    padding:6px 8px!important;
+    font-size:10px!important;
+  }
+}
+
+/* v1.76.47 — mobile settings, footer popovers, read-only OpenLP view, export polish */
+@media(max-width:700px){
+  .regular-service-type-row{
+    position:relative!important;
+    display:grid!important;
+    grid-template-columns:minmax(0,1fr)!important;
+    gap:9px!important;
+    padding:12px!important;
+  }
+  .regular-service-type-row .field,
+  .regular-service-type-row .field:first-child,
+  .regular-service-type-row .field:nth-child(3),
+  .regular-service-type-row .service-type-colour-field{
+    grid-column:1!important;
+    width:100%!important;
+    min-width:0!important;
+  }
+  .regular-service-type-row .field input,
+  .regular-service-type-row .field select{
+    width:100%!important;
+    min-width:0!important;
+  }
+  .regular-service-type-row .rst-delete{
+    position:absolute!important;
+    top:8px!important;
+    right:8px!important;
+    grid-column:auto!important;
+    grid-row:auto!important;
+  }
+  .regular-service-type-row .field:first-child{padding-right:34px!important}
+
+  #churchSuiteActionsWrap .footer-menu-panel{
+    left:auto!important;
+    right:0!important;
+    transform:none!important;
+    width:max-content!important;
+    max-width:calc(100vw - 24px)!important;
+  }
+}
+
+/* OpenLP View is deliberately read-only. */
+body.openlp-only-view .service-list .item{cursor:default!important}
+body.openlp-only-view .service-list .item-actions,
+body.openlp-only-view .service-list .handle,
+body.openlp-only-view .inline-ignore-images,
+body.openlp-only-view .inline-ignore-video,
+body.openlp-only-view .inline-ignore-bible,
+body.openlp-only-view #themeBtn,
+body.openlp-only-view .service-head-actions{display:none!important}
+body.openlp-only-view .service-list .item *{user-select:text}
+
+/* Timed service-type prompt should remain readable on mobile. */
+.service-type-edit-action .transient-label-text{min-width:max-content;max-width:min(240px,calc(100vw - 36px));white-space:normal;line-height:1.25}
+
+.unfinished-export-warning p{white-space:normal;overflow-wrap:normal;word-break:normal;line-height:1.4}
+@media(max-width:700px){
+  .unfinished-export-warning{padding:12px!important}
+  .unfinished-export-warning strong{display:block;margin-bottom:5px}
+  .unfinished-export-warning p{font-size:11px!important;line-height:1.4!important;margin:6px 0!important}
+  #sheetFooter .export-footer-buttons{grid-template-columns:1fr 1fr!important}
+}
+
+
+/* v1.76.48 — interaction polish: preferred actions, header account menu, history reset */
+.header-account-nav{border-top:1px solid var(--line);margin-top:5px;padding-top:5px}
+.header-account-nav .menu-action[hidden]{display:none!important}
+.history-reset-action{border-top:1px solid var(--line)!important;margin-top:4px!important;padding-top:10px!important}
+.template-save-new-bar{display:flex;justify-content:flex-start;margin-top:14px}
+
+/* When ChurchSuite is available, syncing is the preferred way to add/populate services. */
+#servicesFooter.churchsuite-preferred #servicesAddBtn{background:var(--panel)!important;color:var(--ink)!important;border:1px solid var(--line)!important;box-shadow:none!important}
+#servicesFooter.churchsuite-preferred #servicesAddBtn:hover,#servicesFooter.churchsuite-preferred #servicesAddBtn:focus{background:var(--soft)!important}
+#servicesFooter.churchsuite-preferred #servicesSyncChurchSuiteBtn:not([hidden]){background:#303b35!important;color:#fff!important;border-color:#303b35!important;font-weight:750!important}
+#servicesFooter.churchsuite-preferred #servicesSyncChurchSuiteBtn:not([hidden]):hover,#servicesFooter.churchsuite-preferred #servicesSyncChurchSuiteBtn:not([hidden]):focus{background:#222b27!important;border-color:#222b27!important}
+
+/* OpenLP-only view has one action, so make the return control unmistakably primary. */
+body.openlp-only-view #plannerFooter .openlp-return{background:#242824!important;color:#fff!important;border-color:#242824!important;box-shadow:0 2px 7px rgba(0,0,0,.16)!important}
+body.openlp-only-view #plannerFooter .openlp-return:hover,body.openlp-only-view #plannerFooter .openlp-return:focus{background:#111!important;border-color:#111!important}
+
+
+/* v1.76.49 — OpenLP view width and reliable export transfer */
+body.openlp-only-view .service-list .item{
+  grid-template-columns:minmax(0,1fr)!important;
+  width:100%!important;
+}
+body.openlp-only-view .service-list .item>div:nth-child(2){
+  grid-column:1!important;
+  grid-row:1!important;
+  width:100%!important;
+  max-width:none!important;
+  overflow:visible!important;
+}
+body.openlp-only-view .service-list .item>.handle,
+body.openlp-only-view .service-list .item>.item-actions{display:none!important}
+.export-footer-buttons-single{grid-template-columns:minmax(140px,220px)!important;justify-content:end!important}
+.transfer-ios-note{margin-top:10px!important;line-height:1.4!important}
+@media(max-width:700px){
+  body.openlp-only-view .service-list .item{grid-template-columns:minmax(0,1fr)!important;padding-left:12px!important;padding-right:12px!important}
+  body.openlp-only-view .service-list .item>div:nth-child(2){grid-column:1!important;grid-row:1!important}
+  #sheetFooter .export-footer-buttons.export-footer-buttons-single{grid-template-columns:1fr!important;width:100%!important}
+}
+
+
+/* v1.76.57 — safer collaboration reload and deliberate conflict override */
+@media(max-width:900px){
+  .churchsuite-mobile-compact .cs-action-stack .cs-icon-action .transient-label-text{
+    left:0!important;
+    right:auto!important;
+    transform:none!important;
+    text-align:left!important;
+    max-width:min(240px,calc(100vw - 32px))!important;
+  }
+}
+
+/* v17660 ChurchSuite mapping removal */
+.cs-mapping-delete{
+  width:34px;
+  height:34px;
+  padding:0;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+
+/* v17661 ChurchSuite mapping cleanup */
+.settings-inline-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.churchsuite-service-mapping-row{
+  grid-template-columns:minmax(150px,1fr) auto minmax(170px,1fr) auto auto;
+}
+@media(max-width:700px){
+  .settings-inline-actions{
+    width:100%;
+    justify-content:flex-start;
+  }
+  .churchsuite-service-mapping-row{
+    grid-template-columns:minmax(0,1fr) auto auto;
+  }
+  .churchsuite-service-mapping-row>div:first-child{
+    grid-column:1/-1;
+  }
+  .churchsuite-service-mapping-row .mapping-arrow{
+    display:none;
+  }
+  .churchsuite-service-mapping-row select{
+    grid-column:1/2;
+    min-width:0;
+  }
+  .churchsuite-service-mapping-row .cs-mapping-delete{
+    grid-column:2/3;
+    grid-row:auto;
+  }
+  .churchsuite-service-mapping-row .cs-mapping-forget{
+    grid-column:3/4;
+  }
+}
+
+/* v1.76.62 — ChurchSuite type sync policy */
+.churchsuite-type-row{
+  display:grid;
+  grid-template-columns:minmax(180px,1.35fr) minmax(120px,.8fr) minmax(170px,1fr) auto;
+  gap:8px;
+  align-items:center;
+  margin:8px 0;
+}
+.churchsuite-type-row input,.churchsuite-type-row select{min-width:0;width:100%;}
+@media(max-width:700px){
+  .churchsuite-type-row{grid-template-columns:1fr;padding:10px;border:1px solid var(--line);border-radius:12px;}
+  .churchsuite-type-row .cs-type-delete{justify-self:end;}
+}
+
+/* v1.76.63 ChurchSuite sync choice emphasis */
+.cs-import-mode-grid .choice.cs-import-go-to{
+  background:var(--text,#24313d);
+  border-color:var(--text,#24313d);
+  color:#fff;
+}
+.cs-import-mode-grid .choice.cs-import-go-to strong,
+.cs-import-mode-grid .choice.cs-import-go-to span{color:#fff}
+.cs-import-mode-grid .choice.cs-import-go-to:hover{filter:brightness(.94)}
+.cs-import-mode-grid .choice.cs-import-go-to.selected,
+.cs-import-mode-grid .choice.cs-import-go-to.choice-working{
+  outline:2px solid currentColor;
+  outline-offset:2px;
+}
+
+/* v1.76.66 discovered ChurchSuite Type setup */
+.discovered-cs-type-name{min-width:0;display:flex;flex-direction:column;gap:2px}
+.discovered-cs-type-name small{color:var(--muted);font-size:.78rem}
+@media(max-width:700px){
+  .discovered-cs-type-row{
+    grid-template-columns:1fr!important;
+    gap:8px!important;
+    align-items:stretch!important;
+  }
+  .discovered-cs-type-row .cs-type-map,
+  .discovered-cs-type-row .cs-type-local-policy{width:100%!important;min-width:0!important}
+}
+
+/* v1.76.70 service-aware ChurchSuite template sync preview */
+.cs-import-mode-grid .choice.default-selected{box-shadow:0 0 0 3px rgba(255,255,255,.28) inset}
+.template-sync-preview-head{margin:14px 0 8px}
+.template-sync-final-preview{display:flex;flex-direction:column;gap:7px;margin:8px 0 14px}
+.template-sync-preview-row{display:grid;grid-template-columns:30px minmax(0,1fr);gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.template-sync-preview-row>div{min-width:0;display:flex;flex-direction:column;gap:2px}
+.template-sync-preview-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.template-sync-preview-row small{color:var(--muted)}
+
+/* v1.76.71 — mobile export footer must not overlap marking controls */
+@media(max-width:700px){
+  #sheetFooter:has(.export-footer-controls){
+    overflow:visible!important;
+    overflow-x:visible!important;
+    min-height:0!important;
+    height:auto!important;
+    display:block!important;
+    padding:10px 14px calc(10px + env(safe-area-inset-bottom))!important;
+  }
+  #sheetFooter .export-footer-controls{
+    width:100%!important;
+    max-width:100%!important;
+    display:grid!important;
+    grid-template-columns:minmax(0,1fr)!important;
+    grid-template-rows:auto auto!important;
+    gap:10px!important;
+    align-items:stretch!important;
+    margin:0!important;
+  }
+  #sheetFooter .export-footer-note{
+    grid-row:1!important;
+    width:100%!important;
+    min-width:0!important;
+    max-width:100%!important;
+    margin:0!important;
+    padding:0!important;
+    overflow:visible!important;
+  }
+  #sheetFooter .export-footer-checkbox{
+    display:grid!important;
+    grid-template-columns:20px minmax(0,1fr)!important;
+    gap:8px!important;
+    align-items:start!important;
+    width:100%!important;
+    min-width:0!important;
+  }
+  #sheetFooter .export-footer-checkbox input{
+    margin:1px 0 0!important;
+  }
+  #sheetFooter .export-footer-checkbox span{
+    min-width:0!important;
+    white-space:normal!important;
+    overflow-wrap:normal!important;
+    word-break:normal!important;
+    line-height:1.3!important;
+  }
+  #sheetFooter .export-footer-buttons,
+  #sheetFooter .export-footer-buttons-single{
+    grid-row:2!important;
+    width:100%!important;
+    max-width:none!important;
+    display:grid!important;
+    grid-template-columns:minmax(0,1fr)!important;
+    gap:0!important;
+    margin:0!important;
+  }
+  #sheetFooter .export-footer-buttons button,
+  #sheetFooter .export-footer-buttons-single button{
+    width:100%!important;
+    max-width:none!important;
+    min-width:0!important;
+    min-height:44px!important;
+    white-space:normal!important;
+  }
+}
+
+/* v1.76.72 — iOS-safe fixed export footer */
+#sheetFooter .export-footer-controls{
+  width:100%;
+}
+#sheetFooter .export-footer-mark-row,
+#sheetFooter .export-footer-download-row{
+  min-width:0;
+}
+#sheetFooter .export-footer-mark-row{
+  display:flex;
+  align-items:flex-start;
+}
+#sheetFooter .export-footer-download-row{
+  display:flex;
+  justify-content:flex-end;
+}
+#sheetFooter .export-footer-checkbox{
+  display:flex;
+  align-items:flex-start;
+  gap:8px;
+  min-width:0;
+}
+#sheetFooter .export-footer-checkbox span{
+  min-width:0;
+  white-space:normal;
+  word-break:normal;
+  overflow-wrap:normal;
+}
+@media(max-width:700px){
+  #sheetFooter{
+    overflow:visible!important;
+    overflow-x:visible!important;
+  }
+  #sheetFooter .export-footer-controls{
+    display:grid!important;
+    grid-template-columns:minmax(0,1fr)!important;
+    grid-template-rows:auto auto!important;
+    gap:10px!important;
+    width:100%!important;
+    max-width:none!important;
+    overflow:visible!important;
+    align-items:stretch!important;
+  }
+  #sheetFooter .export-footer-mark-row{
+    grid-row:1!important;
+    width:100%!important;
+    min-width:0!important;
+    position:static!important;
+  }
+  #sheetFooter .export-footer-download-row{
+    grid-row:2!important;
+    width:100%!important;
+    min-width:0!important;
+    display:block!important;
+    position:static!important;
+  }
+  #sheetFooter .export-footer-download-row button{
+    display:block!important;
+    width:100%!important;
+    max-width:none!important;
+    min-width:0!important;
+    margin:0!important;
+  }
+  #sheetFooter .export-footer-checkbox{
+    width:100%!important;
+    font-size:11px!important;
+    line-height:1.35!important;
+  }
+  #sheetFooter .export-footer-checkbox input{
+    flex:0 0 auto!important;
+    width:16px!important;
+    height:16px!important;
+    margin:0!important;
+  }
+}
+
+/* v1.76.73 — verified in-service default template and result preview */
+.cs-import-mode-grid .choice.default-template-choice{
+  outline:3px solid rgba(255,255,255,.42);
+  outline-offset:-5px;
+}
+.template-result-preview-heading{margin:14px 0 8px}
+.template-result-preview{display:flex;flex-direction:column;gap:7px;margin:8px 0 14px}
+.template-result-preview-row{
+  display:grid;grid-template-columns:30px minmax(0,1fr);gap:8px;align-items:center;
+  padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel)
+}
+.template-result-preview-row>div{min-width:0;display:flex;flex-direction:column;gap:2px}
+.template-result-preview-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.template-result-preview-row small{color:var(--muted)}
+
+/* v1.76.74 — clearer in-service default template choice */
+.cs-import-mode-grid.service-default-template-state .choice{
+  opacity:.46;
+  filter:saturate(.65);
+  transition:opacity .15s ease,filter .15s ease,border-color .15s ease,background .15s ease;
+}
+.cs-import-mode-grid.service-default-template-state .choice:hover,
+.cs-import-mode-grid.service-default-template-state .choice:focus-visible{
+  opacity:.78;
+  filter:none;
+}
+.cs-import-mode-grid.service-default-template-state .choice.default-template-choice{
+  opacity:1!important;
+  filter:none!important;
+  background:var(--text,#24313d)!important;
+  color:#fff!important;
+  border:2px solid rgba(0,0,0,.78)!important;
+  outline:none!important;
+  box-shadow:0 0 0 1px rgba(255,255,255,.18) inset,0 2px 8px rgba(0,0,0,.12)!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice.default-template-choice strong,
+.cs-import-mode-grid.service-default-template-state .choice.default-template-choice span{
+  color:#fff!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice.default-template-choice:hover,
+.cs-import-mode-grid.service-default-template-state .choice.default-template-choice:focus-visible{
+  opacity:1!important;
+  filter:none!important;
+}
+
+/* v1.76.75 — template chooser defaults to service template, then Continue */
+.template-chooser-layout{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(0,1.2fr);gap:14px;align-items:start}
+.template-choice-list .choice.selected{border:2px solid var(--text,#24313d);background:var(--soft)}
+.template-choice-detail{min-width:0}
+.template-choice-detail-card{border:1px solid var(--line);border-radius:13px;padding:14px;background:var(--panel)}
+.template-choice-detail-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.template-choice-detail-head>div{display:flex;flex-direction:column;gap:3px;min-width:0}
+.template-choice-detail-head small,.template-theme-detail{color:var(--muted);font-size:10px}
+.template-choice-detail-list{margin:12px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:5px;font-size:11px}
+.template-choice-detail-list li span{color:var(--muted)}
+@media(max-width:700px){
+  .template-chooser-layout{grid-template-columns:1fr}
+  .template-choice-detail-card{padding:12px}
+}
+
+/* v1.76.76 — one consistent ChurchSuite sync-method selection flow */
+.cs-import-mode-summary{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  margin:12px 0 0;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:11px;
+  background:var(--soft);
+}
+.cs-import-mode-summary span{font-size:11px;color:var(--muted)}
+.cs-import-mode-grid.service-default-template-state .choice{
+  opacity:.42!important;
+  filter:saturate(.55)!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice.selected{
+  opacity:1!important;
+  filter:none!important;
+  background:var(--text,#24313d)!important;
+  color:#fff!important;
+  border:2px solid rgba(0,0,0,.78)!important;
+  outline:none!important;
+  box-shadow:0 0 0 1px rgba(255,255,255,.18) inset,0 2px 8px rgba(0,0,0,.12)!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice.selected strong,
+.cs-import-mode-grid.service-default-template-state .choice.selected span{
+  color:#fff!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice:not(.selected):hover,
+.cs-import-mode-grid.service-default-template-state .choice:not(.selected):focus-visible{
+  opacity:.76!important;
+  filter:none!important;
+}
+
+/* v1.76.77 — crisp preselected template mode, including multi-service sync */
+.cs-import-mode-grid.service-default-template-state .choice{
+  opacity:.48!important;
+  filter:none!important;
+  background:#f4f4f0!important;
+  color:var(--ink)!important;
+  border:1px solid var(--line)!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice strong{
+  color:var(--ink)!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice span{
+  color:var(--muted)!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice.selected{
+  opacity:1!important;
+  background:#303a42!important;
+  color:#fff!important;
+  border:2px solid #111820!important;
+  box-shadow:0 2px 9px rgba(0,0,0,.16)!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice.selected strong{
+  color:#fff!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice.selected span{
+  color:rgba(255,255,255,.86)!important;
+}
+.cs-import-mode-grid.service-default-template-state .choice:not(.selected):hover,
+.cs-import-mode-grid.service-default-template-state .choice:not(.selected):focus-visible{
+  opacity:.82!important;
+  background:#f8f8f5!important;
+  color:var(--ink)!important;
+}
+.cs-batch-template-row select{
+  border:1px solid var(--line);
+  background:var(--panel);
+  font-weight:650;
+}
+
+/* v1.76.79 — keep the right-anchored ChurchSuite footer menu fully on-screen */
+@media(max-width:700px){
+  #plannerFooter #churchSuiteActionsWrap{
+    position:relative!important;
+  }
+  #plannerFooter #churchSuiteActionsWrap .footer-menu-panel{
+    left:auto!important;
+    right:2px!important;
+    transform:none!important;
+    box-sizing:border-box!important;
+    width:min(280px,calc(100vw - 28px))!important;
+    min-width:0!important;
+    max-width:calc(100vw - 28px)!important;
+    overflow:visible!important;
+  }
+}
+
+/* v1.76.81 — UI consistency and mobile containment */
+
+/* Services: keep CS / Sync positions identical from row to row. */
+.churchsuite-compact-status{
+  display:grid!important;
+  grid-template-columns:84px 84px!important;
+  gap:12px!important;
+  align-items:start!important;
+  justify-content:start!important;
+  min-width:180px!important;
+}
+.churchsuite-compact-status .cs-action-stack{
+  display:grid!important;
+  grid-template-rows:32px 14px!important;
+  justify-items:center!important;
+  align-items:center!important;
+  width:84px!important;
+  min-width:84px!important;
+}
+.churchsuite-compact-status .cs-icon-action,
+.churchsuite-compact-status .cs-icon-muted{
+  justify-self:center!important;
+}
+.churchsuite-compact-status .cs-date{
+  width:84px!important;
+  text-align:center!important;
+  white-space:nowrap!important;
+}
+
+/* Undo/redo: calmer blue-grey that fits the planner palette. */
+.footer-history-trigger{
+  background:#66798d!important;
+  border-color:#526476!important;
+  color:#fff!important;
+}
+.footer-history-trigger:hover,
+.footer-history-trigger[aria-expanded="true"]{
+  background:#586b7f!important;
+  border-color:#46596b!important;
+}
+
+/* Footer burgers: stronger icon and border; menu text easier to scan. */
+#plannerFooter .footer-menu-trigger{
+  border-width:2px!important;
+  border-color:#aeb4b8!important;
+}
+#plannerFooter .burger-glyph{
+  font-size:23px!important;
+  line-height:.7!important;
+  font-weight:900!important;
+  transform:scaleX(1.12);
+}
+#plannerFooter .app-menu-panel{
+  border-width:2px!important;
+  border-color:#b8bdc0!important;
+}
+#plannerFooter .menu-action{
+  font-size:14px!important;
+  line-height:1.25!important;
+  padding:11px 12px!important;
+}
+
+/* Settings tabs should look like tabs, not a floating sticky island. */
+.settings-nav{
+  position:static!important;
+  z-index:auto!important;
+  margin:0 0 18px!important;
+  padding:0!important;
+  gap:2px!important;
+  background:transparent!important;
+  backdrop-filter:none!important;
+  border-bottom:1px solid var(--line)!important;
+}
+.settings-nav button{
+  border:1px solid transparent!important;
+  border-bottom:0!important;
+  border-radius:9px 9px 0 0!important;
+  padding:9px 12px!important;
+  margin-bottom:-1px!important;
+  background:transparent!important;
+  color:var(--muted)!important;
+}
+.settings-nav button.active{
+  background:var(--panel)!important;
+  color:var(--ink)!important;
+  border-color:var(--line)!important;
+  border-bottom-color:var(--panel)!important;
+}
+
+/* Extension settings: detailed ChurchSuite type/mapping setup belongs later. */
+.settings-section[data-settings-page="extensions"]{
+  display:flex;
+  flex-direction:column;
+}
+.settings-section[data-settings-page="extensions"] #churchSuiteServiceMappingSettings{order:80}
+.settings-section[data-settings-page="extensions"] #churchSuiteTypesSettings{order:90}
+
+/* Forms must never make a mobile sheet wider than its viewport. */
+.field,
+.field input,
+.field select,
+.field textarea,
+.sheet input,
+.sheet select,
+.sheet textarea{
+  box-sizing:border-box!important;
+  max-width:100%!important;
+  min-width:0!important;
+}
+.sheet textarea{
+  white-space:pre-wrap!important;
+  overflow-wrap:anywhere!important;
+  word-break:normal!important;
+}
+.toggle>span,
+.toggle small,
+.choice span,
+.menu-action,
+.meta{
+  min-width:0!important;
+  overflow-wrap:anywhere!important;
+}
+
+/* Mobile sheet footer: buttons stay inside the sheet and wrap intentionally. */
+@media(max-width:700px){
+  #sheetFooter{
+    box-sizing:border-box!important;
+    max-width:100vw!important;
+    min-width:0!important;
+    gap:7px!important;
+  }
+  #sheetFooter>button,
+  #sheetFooter>a{
+    min-width:0!important;
+    max-width:100%!important;
+    white-space:normal!important;
+    line-height:1.15!important;
+    padding-left:10px!important;
+    padding-right:10px!important;
+  }
+  #cancelLibrarySong{flex:0 0 auto!important}
+  #saveLibrarySongCopy{flex:1 1 88px!important}
+  #saveLibrarySong{flex:1 1 104px!important}
+
+  .settings-nav{
+    overflow-x:auto!important;
+    white-space:nowrap!important;
+  }
+  .settings-nav button{
+    flex:0 0 auto!important;
+    padding:8px 10px!important;
+  }
+
+  #plannerFooter .menu-action{
+    font-size:14px!important;
+  }
+
+  .churchsuite-mobile-compact{
+    grid-template-columns:84px 84px!important;
+    justify-content:start!important;
+    gap:12px!important;
+  }
+  .churchsuite-mobile-compact .cs-action-stack{
+    width:84px!important;
+    min-width:84px!important;
+    display:grid!important;
+    grid-template-rows:32px 14px!important;
+    justify-items:center!important;
+  }
+  .churchsuite-mobile-compact .cs-date{
+    width:84px!important;
+    text-align:center!important;
+  }
+}
+
+
+/* v1.76.82 — header burger and fixed settings tabs */
+
+/* Header/nav burger: border should match the dark burger strokes. */
+.header-actions .menu-trigger,
+.services-header-nav .menu-trigger,
+#servicesHeaderNav .menu-trigger,
+header .menu-trigger{
+  border-width:2px!important;
+  border-color:var(--ink)!important;
+}
+
+/* Settings tabs remain visible while only the settings content scrolls. */
+.settings-nav{
+  position:sticky!important;
+  top:0!important;
+  z-index:40!important;
+  margin:0 0 18px!important;
+  padding-top:4px!important;
+  background:var(--panel)!important;
+  overflow-x:auto!important;
+  overflow-y:hidden!important;
+}
+
+
+/* v1.76.83 — exact header burger border + settings tabs joined to dialog header */
+
+/* Target the actual header burger buttons directly. */
+#headerMenuBtn,
+#servicesHeaderMenuBtn{
+  border:2px solid var(--ink)!important;
+  box-shadow:none!important;
+  background:var(--panel)!important;
+  color:var(--ink)!important;
+}
+#headerMenuBtn:hover,
+#servicesHeaderMenuBtn:hover,
+#headerMenuBtn[aria-expanded="true"],
+#servicesHeaderMenuBtn[aria-expanded="true"]{
+  border-color:var(--ink)!important;
+  background:var(--soft)!important;
+}
+
+/* Settings tab strip should visually belong to the fixed header, with no seam. */
+#settingsNav.settings-nav{
+  position:sticky!important;
+  top:-18px!important;
+  z-index:35!important;
+  margin:-18px -2px 18px!important;
+  padding:18px 2px 0!important;
+  background:var(--panel)!important;
+  border-bottom:1px solid var(--line)!important;
+  box-shadow:none!important;
+  backdrop-filter:none!important;
+}
+
+/* Remove the transparent gutter/seam between the dialog header and tabs. */
+#sheetBody:has(#settingsNav){
+  padding-top:0!important;
+}
+#sheetBody:has(#settingsNav) #settingsNav{
+  margin-top:0!important;
+  padding-top:0!important;
+  top:0!important;
+}
+
+/* On mobile keep the same joined-header effect while still allowing horizontal tab scroll. */
+@media(max-width:700px){
+  #settingsNav.settings-nav{
+    margin-left:0!important;
+    margin-right:0!important;
+    padding-left:0!important;
+    padding-right:0!important;
+    background:var(--panel)!important;
+  }
+}
+
+/* v1.76.84 — ChurchSuite Express Sync */
+.cs-icon-action.express-armed{
+  background:#334d66!important;
+  border-color:#263d52!important;
+  color:#fff!important;
+  box-shadow:0 0 0 2px rgba(51,77,102,.16)!important;
+}
+.cs-icon-action.express-armed .transient-label-text{
+  font-weight:800!important;
+}
+.express-sync-menu-action{
+  color:#304e68!important;
+}
+.express-sync-working{
+  min-height:120px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:14px;
+  padding:22px 10px;
+}
+.express-sync-working>div:last-child{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+}
+.express-sync-working span{
+  color:var(--muted);
+  font-size:12px;
+}
+.express-sync-spinner{
+  width:25px;
+  height:25px;
+  border:3px solid rgba(70,90,110,.18);
+  border-top-color:#536f88;
+  border-radius:50%;
+  animation:expressSyncSpin .75s linear infinite;
+}
+@keyframes expressSyncSpin{to{transform:rotate(360deg)}}
+
+/* v1.76.86 — temporary ChurchSuite plan-item people diagnostic */
+.cs-people-diagnostic-row{margin-top:8px;border-top:1px solid rgba(0,0,0,.08);padding-top:8px}
+.cs-people-diagnostic-row summary{cursor:pointer;font-size:12px}
+.cs-people-diagnostic-row summary span{color:var(--muted);font-weight:400}
+.cs-people-diagnostic-row pre{
+  box-sizing:border-box;max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;
+  padding:9px;border-radius:9px;background:rgba(0,0,0,.04);font-size:10px;line-height:1.35
+}
+
+/* v1.76.87 — ChurchSuite assigned people import */
+.cs-scan-item-main small{line-height:1.3}
+
+/* v1.76.88 — ChurchSuite people permissions and template controls */
+.template-editor-controls,.template-save-controls{display:flex;flex-direction:column;gap:6px;min-width:150px}
+.template-people-toggle{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);white-space:nowrap}
+.template-people-toggle input{width:15px;height:15px;margin:0}
+.song-team-person{display:inline-flex;align-items:center;gap:4px;position:relative}
+.song-team-more{position:relative;border:0;background:rgba(80,105,130,.10);color:#4e667d;border-radius:999px;padding:1px 5px;font:700 9px inherit;cursor:pointer}
+.song-team-more .transient-label-text{left:50%;transform:translateX(-50%);bottom:calc(100% + 6px);top:auto;min-width:180px;max-width:min(320px,calc(100vw - 30px));white-space:normal;text-align:left;line-height:1.3}
+@media(max-width:700px){
+  .template-editor-row{grid-template-columns:auto minmax(0,1fr) auto!important}
+  .template-editor-controls{grid-column:2;min-width:0;width:100%}
+  .template-editor-controls select{width:100%}
+  .template-people-toggle{white-space:normal}
+  .template-save-controls{min-width:0;width:100%}
+}
+
+/* v1.76.90 — ChurchSuite song comparison + full team editor */
+.churchsuite-song-team-full{
+  display:flex;flex-direction:column;gap:3px;margin:-2px 0 12px;padding:9px 11px;
+  border:1px solid var(--line);border-radius:10px;background:var(--soft)
+}
+.churchsuite-song-team-full strong{font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.churchsuite-song-team-full span{font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+.churchsuite-compare-btn{border-color:#607b94!important}
+.song-compare-counts{
+  display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;margin:8px 0 14px
+}
+.song-compare-counts>div{
+  display:flex;flex-direction:column;gap:2px;padding:9px;border:1px solid var(--line);
+  border-radius:10px;background:var(--panel);text-align:center
+}
+.song-compare-counts small{color:var(--muted);font-size:9px}
+.song-compare-counts strong{font-size:18px}
+.song-compare-section{margin:14px 0;padding-top:10px;border-top:1px solid var(--line)}
+.song-compare-section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.song-compare-section-head>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.song-compare-section-head span{font-size:10px;color:var(--muted)}
+.song-compare-list{display:flex;flex-direction:column;gap:5px;max-height:220px;overflow:auto}
+.song-compare-list>div{
+  display:flex;justify-content:space-between;gap:10px;padding:7px 9px;border-radius:8px;background:var(--soft)
+}
+.song-compare-list small{color:var(--muted);text-align:right}
+@media(max-width:700px){
+  .song-compare-counts{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .song-compare-section-head{align-items:stretch;flex-direction:column}
+  .song-compare-section-head button{width:100%}
+  .song-compare-list>div{flex-direction:column;gap:2px}
+  .song-compare-list small{text-align:left}
+}
+
+/* v1.76.91 — actionable ChurchSuite song reconciliation */
+.song-compare-select-all{display:flex;align-items:center;gap:6px;font-size:11px;white-space:nowrap}
+.song-compare-row{display:grid!important;grid-template-columns:22px minmax(0,1fr);align-items:center;gap:8px}
+.song-compare-row.local-song-row{grid-template-columns:22px minmax(0,1fr) 32px!important}
+.song-compare-row>input{width:16px;height:16px;margin:0}
+.song-compare-row>span,.song-compare-edit-link{min-width:0;display:flex;flex-direction:column;gap:2px}
+.song-compare-edit-link{border:0;background:transparent;text-align:left;padding:0;color:inherit;cursor:pointer}
+.song-compare-edit-link:hover strong{text-decoration:underline}
+.song-compare-delete{width:30px;height:30px}
+.song-compare-actions{display:flex;justify-content:flex-end;margin-top:8px}
+.conflict-row{grid-template-columns:minmax(0,1fr) auto!important}
+@media(max-width:700px){
+  .song-compare-row.local-song-row{grid-template-columns:20px minmax(0,1fr) 30px!important}
+  .song-compare-section-head{gap:7px}
+}
+
+/* v1.76.92 — duplicate review before ChurchSuite song import */
+.song-compare-top-actions{display:flex;justify-content:flex-end;margin:0 0 8px}
+.song-duplicate-review{display:flex;flex-direction:column;gap:10px}
+.song-duplicate-review-row{
+  display:grid;grid-template-columns:minmax(180px,1fr) auto minmax(220px,1fr);
+  gap:12px;align-items:center;padding:11px;border:1px solid var(--line);border-radius:11px;background:var(--panel)
+}
+.song-duplicate-source{display:flex;flex-direction:column;gap:2px;min-width:0}
+.song-duplicate-source small{color:var(--muted)}
+.song-duplicate-choice{display:flex;gap:8px;flex-wrap:wrap;font-size:11px}
+.song-duplicate-choice label{display:flex;align-items:center;gap:4px}
+.song-duplicate-candidate{margin:0!important}
+.compact-card{padding:8px 10px!important;margin:0!important}
+@media(max-width:800px){
+  .song-duplicate-review-row{grid-template-columns:1fr}
+  .song-duplicate-choice{order:2}
+  .song-duplicate-candidate{order:3}
+}
+
+/* v1.76.94 — explicit reconciliation results + Recently added */
+.duplicate-review-intro{margin-bottom:12px}
+.song-reconcile-results,.song-compare-last-results{display:flex;flex-direction:column;gap:6px;margin:10px 0 14px}
+.song-reconcile-result,.song-compare-last-result{
+  display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;align-items:center;
+  padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel)
+}
+.song-reconcile-result>div,.song-compare-last-result>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.song-reconcile-result small,.song-compare-last-result small{color:var(--muted)}
+.song-reconcile-status,.song-compare-last-result>span{font-weight:800;text-align:center}
+.song-reconcile-result.added,.song-compare-last-result.added{border-left:4px solid #6f8b72}
+.song-reconcile-result.merged,.song-compare-last-result.merged{border-left:4px solid #607d99}
+.song-reconcile-result.skipped,.song-compare-last-result.skipped{opacity:.68}
+.song-compare-last-results{padding:10px;border:1px solid var(--line);border-radius:11px;background:var(--soft)}
+.song-compare-last-results-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.library-recent-filter{min-width:130px}
+@media(max-width:700px){
+  .library-recent-filter{min-width:0}
+}
+
+/* v1.76.95 — complete metadata-only songs + editor delete + wider duplicate choices */
+.library-lyrics-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  margin:12px 0 7px
+}
+.library-lyrics-head>div{display:flex;flex-direction:column;gap:2px}
+.library-lyrics-head span{font-size:10px;color:var(--muted)}
+#librarySongSectionEditor:empty{
+  min-height:54px;border:1px dashed var(--line);border-radius:10px;background:var(--soft)
+}
+.compact-section-delete{width:28px!important;height:28px!important;flex:0 0 28px!important}
+.edit-section .section-line{display:flex!important;align-items:center;gap:7px}
+.edit-section .section-line .secKey{min-width:0;flex:1}
+.song-delete-arm{margin-left:auto}
+.song-delete-arm.armed{
+  background:#a83d3d!important;border-color:#872f2f!important;color:#fff!important;font-weight:800
+}
+
+/* Duplicate candidate gets the full width beneath song + action choice. */
+.song-duplicate-review-row{
+  grid-template-columns:minmax(0,1fr) auto!important;
+  align-items:start!important;
+}
+.song-duplicate-candidate{
+  grid-column:1 / -1!important;
+  width:100%!important;
+  max-width:none!important;
+  box-sizing:border-box!important;
+}
+.song-duplicate-candidate select{
+  width:100%!important;
+  max-width:none!important;
+  box-sizing:border-box!important;
+}
+@media(max-width:700px){
+  .song-safety-row{align-items:stretch!important}
+  .song-delete-arm{margin-left:0;width:100%}
+  .song-duplicate-review-row{grid-template-columns:1fr!important}
+  .song-duplicate-candidate{grid-column:1!important}
+}
+
+/* v1.76.96 — manual ChurchSuite song list */
+.manual-song-list{display:flex;flex-direction:column;gap:6px;margin:10px 0 14px}
+.manual-song-list-row{
+  display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;align-items:start;
+  padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel)
+}
+.manual-song-list-row>span{font-weight:800;text-align:right}
+.manual-song-list-row>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.manual-song-list-row small{color:var(--muted);overflow-wrap:anywhere}
+.manual-song-copy-field textarea{min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.song-compare-actions{gap:8px;flex-wrap:wrap}
+@media print{
+  body *{visibility:hidden!important}
+  .manual-song-list-printable,.manual-song-list-printable *{visibility:visible!important}
+  .manual-song-list-printable{position:absolute;left:0;top:0;width:100%;padding:0;background:#fff;color:#000}
+  .manual-song-copy-field{display:none!important}
+  .manual-song-list-row{break-inside:avoid;border-color:#bbb;background:#fff}
+  .no-print{display:none!important}
+}
+
+/* v1.76.97 — Dashboard and revised Song Library workflows */
+.library-lyrics-actions{display:flex;gap:6px;flex-wrap:wrap}
+.cs-manual-add-queue{display:flex;flex-direction:column;gap:7px}
+.cs-manual-add-row{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;
+  padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel)
+}
+.cs-manual-add-row>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.cs-manual-add-row small{color:var(--muted)}
+.cs-manual-add-row.done{border-left:4px solid #6f8b72}
+
+.dashboard-page{min-height:calc(100vh - 62px);padding:20px;background:#f4f5f5}
+.dashboard-page-inner{max-width:1120px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.dashboard-head{
+  display:flex;align-items:flex-end;justify-content:space-between;gap:16px;
+  padding:18px 20px;border:1px solid var(--line);border-radius:15px;background:var(--panel)
+}
+.dashboard-head.churchsuite-enabled{
+  border-left:5px solid #657f96;
+  background:linear-gradient(90deg,rgba(101,127,150,.08),var(--panel) 32%)
+}
+.dashboard-kicker{
+  display:block;font-size:10px;font-weight:800;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:3px
+}
+.dashboard-head h1{margin:0}
+.dashboard-quick-actions{display:flex;gap:8px;flex-wrap:wrap}
+.dashboard-section{padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+.dashboard-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px}
+.dashboard-section-head h2{margin:0;font-size:17px}
+.dashboard-section-head span{font-size:10px;color:var(--muted)}
+.dashboard-service-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.dashboard-service-card{padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--soft)}
+.dashboard-service-main{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.dashboard-service-main>div{display:flex;flex-direction:column;gap:2px}
+.dashboard-service-main small{color:var(--muted)}
+.dashboard-status{font-size:10px;font-weight:800;border-radius:999px;padding:4px 7px;background:#e6e8e9;white-space:nowrap}
+.dashboard-status-complete,.dashboard-status-downloaded{background:#e5eee6}
+.dashboard-status-incomplete,.dashboard-status-empty{background:#f3ece0}
+.dashboard-status-amended{background:#f3e3df}
+.dashboard-service-meta{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:10px}
+.dashboard-service-actions{display:flex;gap:6px;flex-wrap:wrap}
+.dashboard-more-services{margin-top:11px}
+.dashboard-more-services summary{cursor:pointer;font-weight:700;font-size:12px;margin-bottom:9px}
+.dashboard-type-list{display:flex;flex-direction:column;gap:7px}
+.dashboard-type-row{
+  display:grid;grid-template-columns:12px minmax(0,1fr) auto;align-items:center;gap:10px;
+  padding:9px 10px;border-radius:10px;background:var(--soft)
+}
+.dashboard-type-colour{width:10px;height:34px;border-radius:5px;background:var(--dashboard-type-colour)}
+.dashboard-type-row>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dashboard-type-row small{color:var(--muted);overflow-wrap:anywhere}
+.dashboard-cs-settings-link{margin-top:10px}
+.dashboard-empty{padding:18px;text-align:center;color:var(--muted);grid-column:1/-1}
+.button-link{display:inline-flex;align-items:center;text-decoration:none}
+.dashboard-with-churchsuite .topbar{box-shadow:inset 0 -2px 0 rgba(101,127,150,.30)}
+
+@media(max-width:700px){
+  .dashboard-page{padding:10px}
+  .dashboard-head{align-items:stretch;flex-direction:column;padding:14px}
+  .dashboard-quick-actions>*{flex:1}
+  .dashboard-section{padding:12px}
+  .dashboard-service-grid{grid-template-columns:1fr}
+  .dashboard-type-row{grid-template-columns:10px minmax(0,1fr)}
+  .dashboard-type-row>button{grid-column:2;width:100%}
+  .cs-manual-add-row{grid-template-columns:1fr}
+  .cs-manual-add-row button{width:100%}
+  .library-lyrics-actions{width:100%}
+}
+
+/* v1.76.98 — Home screen integration and footer navigation */
+.dashboard-page{
+  position:fixed!important;
+  top:var(--app-header-h)!important;
+  bottom:0!important;
+  left:0!important;
+  right:0!important;
+  overflow:auto!important;
+  box-sizing:border-box!important;
+  padding:22px var(--screen-gutter) 30px!important;
+}
+.dashboard-page-inner{padding-top:0!important}
+.menu-action-strong{font-weight:800!important}
+#dashboardFullPlannerBtn{font-weight:800!important}
+.planner-footer-nav-pair{
+  display:flex;
+  align-items:flex-start;
+  gap:7px;
+  flex:0 0 auto;
+  margin-top:1px;
+}
+.planner-footer-nav-pair[hidden]{display:none!important}
+#plannerFooter .planner-footer-nav-pair .service-list-footer-btn{
+  margin:0!important;
+  display:inline-flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:6px!important;
+}
+.footer-nav-icon{font-size:15px;line-height:1}
+body.openlp-only-view #plannerFooterNavPair{display:none!important}
+
+@media(max-width:700px){
+  .dashboard-page{
+    top:var(--app-header-h)!important;
+    padding:12px var(--screen-gutter) 22px!important;
+  }
+  #plannerFooter .planner-footer-nav-pair{
+    gap:5px!important;
+  }
+  #plannerFooter .planner-footer-nav-pair .service-list-footer-btn{
+    width:82px!important;
+    min-width:82px!important;
+  }
+}
+
+/* v1.76.99 — Home navigation polish */
+.home-menu-item{font-weight:800!important}
+#servicesFooter .services-home-btn{
+  display:inline-flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:6px!important;
+}
+
+/* v1.76.100 — experimental SongSelect browser bridge */
+.songselect-extension-settings{margin:10px 0 18px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--soft)}
+.experimental-pill{display:inline-block;margin-left:5px;padding:2px 6px;border-radius:999px;font-size:8px;letter-spacing:.04em;text-transform:uppercase;background:#ece2c9;color:#6e5a2b;vertical-align:middle}
+.compact-toggle{min-width:auto!important}
+.songselect-bridge-choice{border-color:#6c8297!important}
+.songselect-bridge-intro,.songselect-bridge-song{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}
+.songselect-bridge-intro p{margin:0;color:var(--muted);font-size:11px}
+.songselect-bridge-steps{padding-left:22px;font-size:12px;line-height:1.5}
+.songselect-bridge-song span,.songselect-bridge-song small{color:var(--muted)}
+.songselect-bridge-preview{display:flex;flex-direction:column;gap:6px;margin:10px 0;max-height:330px;overflow:auto}
+.songselect-bridge-preview details{padding:7px 9px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.songselect-bridge-preview summary{cursor:pointer;font-weight:700;font-size:11px}
+.songselect-bridge-preview pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:11px;margin:7px 0 0}
+
+/* v1.76.102 — SongSelect existing-song update review */
+.songselect-match-summary{
+  display:flex;flex-direction:column;gap:3px;padding:10px 12px;
+  border:1px solid var(--line);border-radius:10px;background:var(--soft)
+}
+.songselect-match-summary span{font-size:11px;color:var(--muted)}
+.songselect-update-changes{display:flex;flex-direction:column;gap:6px;margin:12px 0}
+.songselect-update-change{
+  display:grid;grid-template-columns:minmax(90px,.7fr) minmax(0,1fr) 24px minmax(0,1fr);
+  gap:7px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel)
+}
+.songselect-update-change.important{border-left:4px solid #9b7554}
+.songselect-update-change .change-before{color:var(--muted)}
+.songselect-update-change .change-arrow{text-align:center;font-weight:800}
+.songselect-update-change .change-after{font-weight:700}
+@media(max-width:700px){
+  .songselect-update-change{grid-template-columns:1fr}
+  .songselect-update-change .change-arrow{display:none}
+  .songselect-update-change .change-before::before{content:"Current: ";font-weight:700}
+  .songselect-update-change .change-after::before{content:"SongSelect: ";font-weight:700}
+}
+
+/* v1.76.103 — SongSelect guided download fallback */
+.songselect-guided-choice{border-color:#58758d!important}
+.songselect-guided-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 14px}
+.songselect-guided-upload{padding:12px;border:1px solid var(--line);border-radius:11px;background:var(--soft)}
+.songselect-guided-upload p{margin:4px 0 10px}
+.settings-inline-actions{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+#songSelectSearchUrl{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
+
+/* v1.76.104 — guided SongSelect existing-song comparison */
+#songImportUseExisting{white-space:normal}
+
+/* v1.76.105 — service song basic CCLI metadata */
+.service-song-basic-meta{
+  display:flex;gap:10px;align-items:center;margin:-4px 0 10px;
+  font-size:11px;color:var(--muted)
+}
+.service-song-basic-meta strong{color:var(--text);font-weight:700}
+
+/* v1.76.106 — direct CCLI SongSelect lookup */
+#songSelectCcliUrl{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
+
+/* v1.76.107 — robust SongSelect text-search fallback */
+#songSelectGuidedOpened strong{color:var(--text);font-weight:700}
+
+/* v1.76.108 — direct SongSelect text search restored */
+
+/* v1.76.109 — SongSelect bridge defaults off; preserve + in text search */
+
+/* v1.76.110 — separate normal SongSelect and experimental bridge */
+.experimental-songselect-settings{margin-top:10px}
+
+/* v1.76.111 — migrate legacy SongSelect text-search URLs */
+
+/* v1.76.112 — fix startup crash from early SongSelect migration */
+
+/* v1.76.113 — full side-by-side SongSelect merge */
+.song-merge-grid{
+  display:grid;
+  grid-template-columns:120px minmax(0,1fr) minmax(0,1fr);
+  gap:7px;
+  margin:12px 0;
+  align-items:stretch
+}
+.song-merge-column-head{
+  font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--muted);padding:0 8px 3px
+}
+.song-merge-row{display:contents}
+.song-merge-label{
+  padding:10px 7px;font-size:11px;font-weight:800;color:var(--text);
+  align-self:stretch;display:flex;align-items:flex-start
+}
+.song-merge-choice{
+  position:relative;display:flex;flex-direction:column;gap:6px;
+  padding:9px 10px;border:1px solid var(--line);border-radius:10px;
+  background:var(--panel);cursor:pointer;min-width:0
+}
+.song-merge-choice.selected{
+  border-width:2px;border-color:#607d99;background:var(--soft)
+}
+.song-merge-choice input{
+  position:absolute;top:9px;right:9px;margin:0
+}
+.song-merge-source{
+  padding-right:24px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)
+}
+.song-merge-value{font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+.song-merge-lyric-section{padding:7px 0;border-top:1px solid var(--line)}
+.song-merge-lyric-section:first-child{border-top:0;padding-top:0}
+.song-merge-lyric-section strong{display:block;margin-bottom:4px;font-size:10px}
+.song-merge-lyric-section div{white-space:normal}
+.song-merge-empty{color:var(--muted);font-style:italic}
+.song-merge-actions{flex-wrap:wrap}
+@media(max-width:760px){
+  .song-merge-grid{display:flex;flex-direction:column;gap:10px}
+  .song-merge-column-head{display:none}
+  .song-merge-row{
+    display:grid;grid-template-columns:1fr;gap:6px;
+    padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--soft)
+  }
+  .song-merge-label{padding:0 0 2px}
+  .song-merge-choice{background:var(--panel)}
+  .song-merge-actions>*{flex:1 1 46%;white-space:normal}
+}
+
+/* v1.76.114 — Home is the default Planner/Admin landing screen */
+
+/* v1.76.115 — context-aware Settings return + clearer SongSelect merge */
+.song-merge-bulk-actions{
+  display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:12px 0 8px
+}
+.song-merge-row.has-difference .song-merge-import.different{
+  background:#f4eadf;
+  border-color:#c7a77f
+}
+.song-merge-row.has-difference .song-merge-import.different.selected{
+  background:#eee0d1;
+  border-color:#9b7554
+}
+.song-merge-diff-dot{
+  margin-left:6px;font-size:8px;color:#a47045;vertical-align:middle
+}
+@media(max-width:760px){
+  .song-merge-row.has-difference{border-color:#c7a77f}
+  .song-merge-bulk-actions>button{flex:1}
+}
+
+/* v1.76.116 — packaged SongSelect Edge/Chrome extension */
+.songselect-extension-settings-actions{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.songselect-extension-install{display:flex;flex-direction:column;gap:10px}
+.songselect-extension-install ol{margin:0;padding-left:22px;font-size:12px;line-height:1.5}
+.settings-help-details{margin-top:8px}
+.settings-help-details summary{cursor:pointer;font-weight:700;font-size:11px}
+
+
+/* v1.76.119 — experimental bridge Add Song launch flow */
+.songselect-extension-launch-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
+
+/* v1.76.123 — Home hierarchy + explicit ChurchSuite song import choices */
+.dashboard-regular-services{
+  margin-top:38px!important;
+  padding-top:24px;
+  border-top:1px solid var(--line)
+}
+.dashboard-regular-services .dashboard-section-head{
+  opacity:.88
+}
+.dashboard-regular-services .dashboard-type-list{
+  background:var(--soft);
+  border-radius:12px;
+  padding:5px 10px
+}
+.dashboard-regular-services .dashboard-type-row{
+  min-height:44px;
+  padding-top:7px;
+  padding-bottom:7px
+}
+.dashboard-regular-services .dashboard-type-row button{
+  opacity:.78
+}
+.song-compare-import-actions{
+  display:flex;
+  gap:7px;
+  flex-wrap:wrap
+}
+.songselect-extension-reminder p{
+  margin-bottom:5px
+}
+@media(max-width:700px){
+  .dashboard-regular-services{margin-top:28px!important;padding-top:18px}
+  .song-compare-import-actions>button{flex:1 1 46%;white-space:normal}
+}
+
+/* v1.76.124 — stronger Home spacing + footer-driven ChurchSuite song queue */
+.dashboard-regular-services{
+  margin-top:72px!important;
+  padding-top:32px;
+}
+.song-import-method-choice{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  margin:12px 0;
+}
+.song-import-method-choice .choice-line.selected{
+  border-width:2px;
+  border-color:#607d99;
+  background:var(--soft);
+}
+@media(max-width:700px){
+  .dashboard-regular-services{
+    margin-top:50px!important;
+    padding-top:26px;
+  }
+}
+
+/* v1.76.125 — paced ChurchSuite song batch with reliable Back */
+.cs-manual-add-row.active{
+  border-color:#607d99;
+  background:var(--soft)
+}
+
+/* v1.80.0 — CCLI mismatch is a critical song-import warning */
+.critical-ccli-warning{
+  margin:12px 0;
+  padding:12px 14px;
+  border:2px solid #b42318;
+  border-radius:10px;
+  background:#fff0ee;
+  color:#7a1b13;
+}
+.critical-ccli-warning strong{color:#8f1d14}
+.critical-ccli-warning p{margin:5px 0 0;color:#7a1b13}
+.song-merge-row.critical-ccli-mismatch .song-merge-label{
+  color:#9f1f16;
+}
+.song-merge-row.critical-ccli-mismatch .song-merge-choice{
+  border-color:#d55348;
+  background:#fff5f4;
+}
+.song-merge-row.critical-ccli-mismatch .song-merge-choice.selected{
+  border:2px solid #b42318;
+  background:#ffe9e6;
+}
+.song-merge-critical-label{
+  display:block;
+  margin-top:4px;
+  padding:2px 5px;
+  border-radius:5px;
+  background:#b42318;
+  color:white;
+  font-size:9px;
+  font-weight:800;
+  line-height:1.2;
+  text-transform:uppercase;
+  letter-spacing:.03em;
+}
+.ccli-conflict-card{
+  border:2px solid #b42318!important;
+  background:#fff0ee!important;
+  color:#7a1b13!important;
+}
+.ccli-conflict-card strong,
+.ccli-conflict-card small{color:#7a1b13!important}
