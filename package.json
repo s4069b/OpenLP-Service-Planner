@@ -34,7 +34,7 @@
   "dependencies": {
     "fflate": "0.8.3",
     "esbuild": "0.28.2",
-    "pdfjs-dist": "6.2.108"
+    "pdfjs-dist": "6.3.289"
   },
   "engines": {
     "node": ">=24"
